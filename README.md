@@ -24,3 +24,10 @@ Current open validation is listed in [`TODO.md`](TODO.md): chat styling/settings
 ## License
 
 See [`LICENSE.md`](LICENSE.md). Third-party notices are kept under [`ThirdParty/`](ThirdParty/).
+
+### Acknowledgements
+
+The visual glass aesthetic and textures are inspired by and directly use
+assets from the original **Glass** addon by **Wowuidev**. Glass is also MIT
+licensed; its full notice remains in
+[`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
