@@ -9,7 +9,7 @@ flowchart TD
   M --> S["Style / Colors / Resize"]
   M --> I["Dock / Controls / ChatBar"]
   M --> X["CopyOverlay / UrlCopy"]
-  M --> R["Restore / Ticker / History policy"]
+  M --> R["Restore / Ticker (History disabled)"]
   T --> O["Options.lua"]
   O --> C
   T --> L["ThirdParty libraries"]
