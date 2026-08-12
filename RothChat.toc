@@ -1,0 +1,35 @@
+## Interface: 120001, 120005
+## Title: Roth Chat
+## Notes: Modular immersive chat UI for Roth (Diablo-style).
+## Author: Roth Team
+## Version: 1.0.1
+## SavedVariables: RothChatDB
+## Category-enUS: Chat
+## Category-ruRU: Чат
+
+# Libraries
+ThirdParty\LibStub\LibStub.lua
+ThirdParty\CallbackHandler-1.0\CallbackHandler-1.0.lua
+ThirdParty\LibSharedMedia-3.0\lib.xml
+
+Util.lua
+Core.lua
+
+# Modules
+Modules\Dock.lua
+Modules\Style.lua
+Modules\Controls.lua
+Modules\ChatBar.lua
+Modules\Restore.lua
+Modules\CopyOverlay.lua
+Modules\UrlCopy.lua
+Modules\Colors.lua
+Modules\Resize.lua
+# Modules\History.lua -- legacy, disabled (Restore handles persistence)
+Modules\Ticker.lua
+Modules\Timestamps.lua
+Modules\Cleaner.lua
+Modules\Alerts.lua
+Modules\Sticky.lua
+
+Options.lua
