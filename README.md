@@ -23,7 +23,8 @@ Current open validation is listed in [`TODO.md`](TODO.md): chat styling/settings
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md). Third-party notices are kept under [`ThirdParty/`](ThirdParty/).
+Licensed under the [MIT License](LICENSE.md). Third-party notices are kept
+under [`ThirdParty/`](ThirdParty/).
 
 ### Acknowledgements
 
