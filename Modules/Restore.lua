@@ -116,12 +116,20 @@ function M:Init(core)
   return true
 end
 
+local function ReadOptionalFrameValue(cf, methodName)
+  local method = cf and cf[methodName]
+  if type(method) ~= "function" then return nil end
+  return method(cf)
+end
+
 local function SnapshotFadeSettings(cf)
   if not cf or fadeSnapshots[cf] then return end
+  -- Do not use `value and call() or nil` here: false is a meaningful fading
+  -- state and must survive the snapshot/restore round trip.
   fadeSnapshots[cf] = {
-    fading = cf.GetFading and cf:GetFading() or nil,
-    timeVisible = cf.GetTimeVisible and cf:GetTimeVisible() or nil,
-    fadeDuration = cf.GetFadeDuration and cf:GetFadeDuration() or nil,
+    fading = ReadOptionalFrameValue(cf, "GetFading"),
+    timeVisible = ReadOptionalFrameValue(cf, "GetTimeVisible"),
+    fadeDuration = ReadOptionalFrameValue(cf, "GetFadeDuration"),
   }
 end
 
