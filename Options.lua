@@ -12,6 +12,7 @@ local FONT_MODULES = { "Style", "Ticker", "ChatBar", "CopyOverlay" }
 local TICKER_MODULES = { "Ticker" }
 local CHATBAR_MODULES = { "ChatBar" }
 local CLEANER_MODULES = { "Cleaner" }
+local CONTROLS_MODULES = { "Controls" }
 
 local BUILTIN_MEDIA = {
   font = {
@@ -42,6 +43,15 @@ local function GetDefaultValue(key, fallback)
   return value
 end
 
+local function GetModuleDefault(key)
+  local name = type(key) == "string" and key:match("^module_(.+)_enabled$")
+  local module = name and RothChat.modules and RothChat.modules[name]
+  if module then
+    return module.defaultEnabled ~= false
+  end
+  return false
+end
+
 local function SafeCallRefresh(name, mod)
   if not mod or type(mod.Refresh) ~= "function" then
     return
@@ -56,7 +66,7 @@ local function RefreshModules(moduleNames)
 
   local seen = {}
   for _, name in ipairs(moduleNames) do
-    if not seen[name] and RothChat:IsModuleEnabled(name) then
+    if not seen[name] and RothChat:IsModuleActive(name) then
       seen[name] = true
       SafeCallRefresh(name, RothChat.modules and RothChat.modules[name])
     end
@@ -83,7 +93,15 @@ local function ApplyModuleToggle(key, value)
   if not SetProfileValue(key, value) then
     return
   end
-  RothChat:ApplyModuleEnablement()
+
+  local name = key:match("^module_(.+)_enabled$")
+  if not name then
+    RothChat:ApplyModuleEnablement()
+  elseif value then
+    RothChat:EnableModule(name)
+  else
+    RothChat:DisableModule(name)
+  end
 end
 
 local function NormalizeRGBHex(value, fallback)
@@ -201,9 +219,13 @@ local function AddModuleCheckbox(category, variable, label, tooltip, key)
     variable,
     Settings.VarType.Boolean,
     label,
-    GetDefaultValue(key, false),
+    GetModuleDefault(key),
     function()
-      return RothChat:Get(key) and true or false
+      local value = RothChat:Get(key)
+      if value == nil then
+        return GetModuleDefault(key)
+      end
+      return value and true or false
     end,
     function(value)
       ApplyModuleToggle(key, value)
@@ -293,6 +315,7 @@ local function AddImmersionPreset(category)
       end
       RothChat:ApplyImmersionPreset(value)
       RefreshModules(TICKER_MODULES)
+      RefreshModules(CONTROLS_MODULES)
     end
   )
 
@@ -375,7 +398,7 @@ local function BuildSettingsCategory()
     "Smooth Scroll",
     "Uses animated movement when scrolling chat history.",
     "smoothScrollEnabled",
-    nil
+    CONTROLS_MODULES
   )
 
   local typography = Settings.RegisterVerticalLayoutSubcategory(category, "Typography")

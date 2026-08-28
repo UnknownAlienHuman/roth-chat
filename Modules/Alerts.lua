@@ -1,5 +1,5 @@
 -- RothChat - Alerts module
--- Goal: Play subtle sounds for important messages (Whispers).
+-- Plays whisper sounds and highlights inactive docked chat tabs.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -19,6 +19,10 @@ local nextPrune = 0
 local lastSoundAt = 0
 local listenersRegistered = false
 
+local function IsEnabled(core)
+  return M.active and core and core:IsModuleActive("Alerts")
+end
+
 local function CanFlashChatTab()
   return type(_G.FCF_StartAlertFlash) == "function" and type(_G.FCF_StopAlertFlash) == "function"
 end
@@ -32,9 +36,7 @@ end
 local function GetSelectedDockFrame()
   if NS.GetSelectedDockChatFrame then
     local selected = NS.GetSelectedDockChatFrame()
-    if selected then
-      return selected
-    end
+    if selected then return selected end
   end
   return _G.SELECTED_CHAT_FRAME
 end
@@ -47,25 +49,31 @@ local function IsInactiveDockTab(frame)
 end
 
 local function StartInactiveTabFlash(frame)
-  if not CanFlashChatTab() then return end
-  if not IsInactiveDockTab(frame) then return end
+  if not CanFlashChatTab() or not IsInactiveDockTab(frame) then return end
   local tab = GetChatTab(frame)
   if not tab or tab.alerting then return end
   pcall(_G.FCF_StartAlertFlash, frame)
 end
 
-local function StopSelectedTabFlash(frame)
+local function StopTabFlash(frame, selectedOnly)
   if not CanFlashChatTab() or not frame then return end
   local tab = GetChatTab(frame)
   if not tab or not tab.alerting then return end
-  if GetSelectedDockFrame() ~= frame then return end
+  if selectedOnly and GetSelectedDockFrame() ~= frame then return end
   pcall(_G.FCF_StopAlertFlash, frame)
 end
 
 local function RefreshDockFlashes()
   if not CanFlashChatTab() then return end
   for _, cf in ipairs(NS.GetChatFrames()) do
-    StopSelectedTabFlash(cf)
+    StopTabFlash(cf, true)
+  end
+end
+
+local function StopAllFlashes()
+  if not CanFlashChatTab() then return end
+  for _, cf in ipairs(NS.GetChatFrames()) do
+    StopTabFlash(cf, false)
   end
 end
 
@@ -82,50 +90,45 @@ end
 local function PruneSeen(now)
   if now < nextPrune then return end
   nextPrune = now + PRUNE_INTERVAL
-  for lineID, ts in pairs(seenLineIDs) do
-    if (now - ts) > LINE_TTL then
-      seenLineIDs[lineID] = nil
-    end
+  for lineID, timestamp in pairs(seenLineIDs) do
+    if (now - timestamp) > LINE_TTL then seenLineIDs[lineID] = nil end
   end
 end
 
 local function ShouldHandleLine(lineID, now)
+  if NS.CanAccessValue and not NS.CanAccessValue(lineID) then
+    return true
+  end
   if type(lineID) ~= "number" or lineID <= 0 then
     return true
   end
-  local ts = seenLineIDs[lineID]
-  if ts and (now - ts) <= LINE_TTL then
-    return false
-  end
+
+  local timestamp = seenLineIDs[lineID]
+  if timestamp and (now - timestamp) <= LINE_TTL then return false end
   seenLineIDs[lineID] = now
   return true
 end
 
 local function OnWhisperEvent(_, _, ...)
+  if not IsEnabled(M.core) then return end
+
   local now = GetTime()
   PruneSeen(now)
 
   -- CHAT_MSG_* payload: lineID is argument #11.
   local lineID = select(11, ...)
-  if not ShouldHandleLine(lineID, now) then
-    return
-  end
+  if not ShouldHandleLine(lineID, now) then return end
 
   local cooldown = GetSoundCooldown()
-  if (now - lastSoundAt) < cooldown then
-    return
-  end
+  if (now - lastSoundAt) < cooldown then return end
   lastSoundAt = now
 
   pcall(PlaySound, SOUND_ID)
 end
 
 local function OnAddMessage(frame, text)
-  if not M.active then return end
-  if not M.core or not M.core:IsModuleEnabled("Alerts") then return end
-  if type(text) ~= "string" then
-    text = NS.SafeToString(text)
-  end
+  if not IsEnabled(M.core) then return end
+  if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return end
   StartInactiveTabFlash(frame)
 end
@@ -135,13 +138,15 @@ local function RegisterLifecycleListeners(core)
   listenersRegistered = true
 
   core:On("CHAT_LAYOUT_CHANGED", function(_, core2)
-    if not core2:IsModuleEnabled("Alerts") then return end
-    RefreshDockFlashes()
+    if IsEnabled(core2) then RefreshDockFlashes() end
   end, M)
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame)
-    if not core2:IsModuleEnabled("Alerts") then return end
-    StopSelectedTabFlash(chatFrame)
+    if IsEnabled(core2) then StopTabFlash(chatFrame, true) end
+  end, M)
+
+  core:On("CHAT_FRAME_CLOSED", function(_, core2, chatFrame)
+    if IsEnabled(core2) then StopTabFlash(chatFrame, false) end
   end, M)
 end
 
@@ -153,35 +158,28 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
-  local f = self.eventFrame
-  if not f then return end
+  local frame = self.eventFrame
+  if not frame then return end
+
   self.active = true
+  listenersRegistered = false
   core:EnsureChatLifecycleHooks()
   RegisterLifecycleListeners(core)
   core:RegisterAddMessageHook(OnAddMessage, self, 80)
   RefreshDockFlashes()
-  f:RegisterEvent("CHAT_MSG_WHISPER")
-  f:RegisterEvent("CHAT_MSG_BN_WHISPER")
+  frame:RegisterEvent("CHAT_MSG_WHISPER")
+  frame:RegisterEvent("CHAT_MSG_BN_WHISPER")
 end
 
 function M:OnDisable(core)
   self.active = false
-  local f = self.eventFrame
-  if f then
-    f:UnregisterAllEvents()
-  end
-  if core and core.UnregisterAddMessageHooks then
-    core:UnregisterAddMessageHooks(self)
-  end
-  if core and core.OffOwner then
-    core:OffOwner(self)
-  end
   listenersRegistered = false
-  if table and table.wipe then
-    table.wipe(seenLineIDs)
-  else
-    seenLineIDs = {}
-  end
+
+  if self.eventFrame then self.eventFrame:UnregisterAllEvents() end
+  if core and core.UnregisterAddMessageHooks then core:UnregisterAddMessageHooks(self) end
+  StopAllFlashes()
+
+  if table and table.wipe then table.wipe(seenLineIDs) else seenLineIDs = {} end
   nextPrune = 0
   lastSoundAt = 0
 end

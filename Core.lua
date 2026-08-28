@@ -8,16 +8,18 @@ local RothChat = CreateFrame("Frame")
 _G.RothChat = RothChat
 
 RothChat.name = "RothChat"
-RothChat.version = "1.1.0"
+RothChat.version = "1.1.1"
 
 RothChat.modules = {}        -- [moduleName] = moduleTable
 RothChat.moduleOrder = {}    -- ordered list
-RothChat.moduleState = {}    -- [moduleName] = { enabled=bool, loaded=bool, ok=bool, err=string }
+RothChat.moduleState = {}    -- [moduleName] = runtime lifecycle state
 RothChat._moduleFilters = {} -- [moduleTable] = { [event] = { {callback, owner, priority}, ... } }
 RothChat._messageFilterState = {} -- [event] = { entries = { {callback, owner, priority}, ... }, dispatcher, registered }
 
 -- Deferred operations that are unsafe in combat.
 RothChat._deferred = {}
+RothChat._addonLoaded = false
+RothChat._addonEnabled = false
 RothChat._loginComplete = false
 RothChat._chatLifecycleHooked = false
 RothChat._chatLifecycleQueue = {
@@ -387,11 +389,16 @@ function RothChat:RegisterModule(module)
     return
   end
 
+  local defaultEnabled = module.defaultEnabled ~= false
   self.modules[module.name] = module
   self.moduleOrder[#self.moduleOrder + 1] = module.name
   self.moduleState[module.name] = {
-    enabled = (module.defaultEnabled ~= false),
+    defaultEnabled = defaultEnabled,
+    enabled = defaultEnabled, -- compatibility field; configured state lives in the profile
     loaded = false,
+    initOK = false,
+    active = false,
+    loginCalled = false,
     ok = false,
     err = nil,
   }
@@ -400,11 +407,15 @@ end
 function RothChat:IsModuleEnabled(name)
   local st = self.moduleState[name]
   if not st then return false end
-  -- user override
   local key = "module_" .. name .. "_enabled"
   local v = self:Get(key)
-  if v == nil then return st.enabled end
+  if v == nil then return st.defaultEnabled end
   return v and true or false
+end
+
+function RothChat:IsModuleActive(name)
+  local st = self.moduleState[name]
+  return st and st.active and true or false
 end
 
 function RothChat:SetModuleEnabled(name, enabled)
@@ -485,6 +496,10 @@ local function GetOrCreateMessageFilterState(self, event)
   -- untouched, reducing taint on routing, sender, line-ID and access metadata.
   state.dispatcher = function(chatFrame, evt, ...)
     local args = PackValues(...)
+    if args.n < 1 or (NS.CanAccessValue and not NS.CanAccessValue(args[1])) then
+      return false
+    end
+
     local current = self._messageFilterState[evt]
     local entries = current and current.entries
     local shouldDiscardMessage = false
@@ -511,7 +526,7 @@ local function GetOrCreateMessageFilterState(self, event)
             if discard then
               shouldDiscardMessage = true
               break
-            elseif newArg1 then
+            elseif newArg1 and (not NS.CanAccessValue or NS.CanAccessValue(newArg1)) then
               args[1] = newArg1
               if args.n < 1 then
                 args.n = 1
@@ -622,51 +637,102 @@ local function SafeModuleCall(self, name, method, ...)
   if not ok then
     local st = self.moduleState[name]
     if st then
-      st.ok = false
       st.err = res
     end
   end
   return ok, res
 end
 
-function RothChat:EnableModule(name)
-  if not self.modules[name] then return end
-  local st = self.moduleState[name]
-  if not st then return end
-  if st.loaded and st.ok and st.enabled then return end
+local function CleanupModuleRegistrations(self, module)
+  if not module then return end
+  self:UnregisterMessageFilters(module)
+  self:UnregisterAddMessageHooks(module)
+  self:OffOwner(module)
+end
 
-  st.enabled = true
+local function NotifyModuleLogin(self, name)
+  local st = self.moduleState[name]
+  local module = self.modules[name]
+  if not st or not module or not st.active or st.loginCalled or not self._loginComplete then
+    return true
+  end
+
+  local ok = SafeModuleCall(self, name, "OnLogin")
+  if ok then
+    st.loginCalled = true
+    return true
+  end
+
+  st.ok = false
+  st.active = false
+  SafeModuleCall(self, name, "OnDisable")
+  CleanupModuleRegistrations(self, module)
+  return false
+end
+
+function RothChat:EnableModule(name)
+  local module = self.modules[name]
+  local st = self.moduleState[name]
+  if not module or not st then return false end
+  if self._addonLoaded and not self._addonEnabled then return false end
+  if st.active then return true end
 
   if not st.loaded then
-    -- Init once
     local ok = SafeModuleCall(self, name, "Init")
     st.loaded = true
-    st.ok = ok and true or false
+    st.initOK = ok and true or false
+    st.ok = st.initOK
+    if not st.initOK then
+      return false
+    end
+  elseif not st.initOK then
+    return false
   end
 
-  if st.ok then
-    -- Ensure idempotency: modules that register bus handlers on enable won't double-register.
-    self:OffOwner(self.modules[name])
-    self:UnregisterMessageFilters(self.modules[name])
-    SafeModuleCall(self, name, "OnEnable")
+  -- Owner-aware registrations are rebuilt for every activation. This prevents
+  -- stale callbacks from surviving an incomplete module-specific OnDisable.
+  CleanupModuleRegistrations(self, module)
+  st.err = nil
+  st.ok = true
+
+  local ok = SafeModuleCall(self, name, "OnEnable")
+  if not ok then
+    st.ok = false
+    st.active = false
+    CleanupModuleRegistrations(self, module)
+    return false
   end
+
+  st.active = true
+  if not NotifyModuleLogin(self, name) then
+    return false
+  end
+
+  return true
 end
 
 function RothChat:DisableModule(name)
-  local m = self.modules[name]
+  local module = self.modules[name]
   local st = self.moduleState[name]
-  if not m or not st then return end
-  st.enabled = false
-  SafeModuleCall(self, name, "OnDisable")
+  if not module or not st then return false end
 
-  -- Defensive cleanup: remove any message filters owned by the module.
-  self:UnregisterMessageFilters(m)
+  -- Teardown callbacks and their emitted events must observe the module as
+  -- inactive. This prevents another module from reacting to stale activation
+  -- state while OnDisable restores shared UI ownership.
+  local wasActive = st.active
+  st.active = false
 
-  -- Defensive cleanup: remove any bus handlers registered with the module as owner.
-  self:OffOwner(m)
+  if wasActive then
+    SafeModuleCall(self, name, "OnDisable")
+  end
+
+  CleanupModuleRegistrations(self, module)
+  return true
 end
 
 function RothChat:ApplyModuleEnablement()
+  if self._addonLoaded and not self._addonEnabled then return end
+
   self:ForEachModule(function(name)
     if self:IsModuleEnabled(name) then
       self:EnableModule(name)
@@ -682,8 +748,7 @@ end
 
 function RothChat:Defer(fn, ...)
   if type(fn) ~= "function" then return end
-  local args = { ... }
-  self._deferred[#self._deferred + 1] = { fn = fn, args = args }
+  self._deferred[#self._deferred + 1] = { fn = fn, args = PackValues(...) }
 end
 
 function RothChat:RunDeferred()
@@ -693,7 +758,7 @@ function RothChat:RunDeferred()
   local q = self._deferred
   self._deferred = {}
   for _, job in ipairs(q) do
-    NS.SafeCall("RothChat:Deferred", job.fn, unpack(job.args))
+    NS.SafeCall("RothChat:Deferred", job.fn, UnpackValues(job.args))
   end
 end
 
@@ -708,7 +773,12 @@ RothChat._addMsgCallbacks = {} -- sorted list: { {fn, owner, priority}, ... }
 RothChat._addMsgHooked = {}   -- [chatFrame] = true
 
 local function DispatchAddMessage(chatFrame, text, r, g, b, ...)
-  if NS.IsSecretValue(text) then return end
+  if NS.CanAccessValue then
+    if not NS.CanAccessValue(text) then return end
+  elseif NS.IsSecretValue(text) then
+    return
+  end
+
   local cbs = RothChat._addMsgCallbacks
   for i = 1, #cbs do
     local entry = cbs[i]
@@ -907,8 +977,10 @@ end
 
 function RothChat:OnAddonLoaded()
   InitDB()
+  self._addonLoaded = true
+  self._addonEnabled = self:Get("enabled") ~= false
 
-  if not self:Get("enabled") then
+  if not self._addonEnabled then
     self:Print("disabled in settings")
     return
   end
@@ -919,14 +991,17 @@ end
 
 function RothChat:OnPlayerLogin()
   self._loginComplete = true
-  -- Some frames are created during login; give modules a second hook.
-  self:ForEachModule(function(name)
-    if self:IsModuleEnabled(name) then
-      SafeModuleCall(self, name, "OnLogin")
-    end
-  end)
 
-  self:QueueChatLifecycleRefresh(nil, "player_login")
+  if self._addonEnabled then
+    self:ForEachModule(function(name)
+      local st = self.moduleState[name]
+      if st and st.active then
+        NotifyModuleLogin(self, name)
+      end
+    end)
+
+    self:QueueChatLifecycleRefresh(nil, "player_login")
+  end
 
   -- Options panel is created after all modules are registered.
   if type(self.InitOptions) == "function" then
