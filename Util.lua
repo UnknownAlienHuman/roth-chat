@@ -133,9 +133,38 @@ function NS.IsSecretValue(v)
   return ok and (res and true or false) or false
 end
 
+-- `issecretvalue` describes provenance; `canaccessvalue` is the operation gate.
+-- Gate first, before nil checks, type checks, comparisons, formatting, or storage.
+function NS.CanAccessValue(v)
+  local fn = _G.canaccessvalue
+  if type(fn) == "function" then
+    local ok, accessible = pcall(fn, v)
+    return ok and accessible and true or false
+  end
+
+  -- Pre-secret-value clients: preserve the old conservative behavior.
+  return not NS.IsSecretValue(v)
+end
+
+function NS.CanAccessAllValues(...)
+  local fn = _G.canaccessallvalues
+  if type(fn) == "function" then
+    local ok, accessible = pcall(fn, ...)
+    return ok and accessible and true or false
+  end
+
+  local n = select("#", ...)
+  for i = 1, n do
+    if not NS.CanAccessValue(select(i, ...)) then
+      return false
+    end
+  end
+  return true
+end
+
 function NS.SafeToString(v)
+  if not NS.CanAccessValue(v) then return "" end
   if v == nil then return "" end
-  if NS.IsSecretValue(v) then return "" end
 
   local tv = type(v)
   if tv == "string" then return v end
@@ -143,10 +172,13 @@ function NS.SafeToString(v)
   if tv == "boolean" then return v and "true" or "false" end
 
   local ok, s = pcall(tostring, v)
-  if not ok or type(s) ~= "string" then
+  if not ok then
     return ""
   end
-  if NS.IsSecretValue(s) then
+  if not NS.CanAccessValue(s) then
+    return ""
+  end
+  if type(s) ~= "string" then
     return ""
   end
   return s
@@ -163,8 +195,9 @@ function NS.SafeConcat(...)
 end
 
 function NS.SafeTrunc(s, maxLen)
-  if NS.IsSecretValue(s) then return "" end
   s = NS.SafeToString(s)
+  if s == "" then return "" end
+
   maxLen = tonumber(maxLen) or 4000
   if maxLen < 64 then maxLen = 64 end
   if #s > maxLen then
@@ -175,7 +208,9 @@ function NS.SafeTrunc(s, maxLen)
 end
 
 function NS.Utf8Len(str)
-  if not str or NS.IsSecretValue(str) then return 0 end
+  if not NS.CanAccessValue(str) then return 0 end
+  if type(str) ~= "string" or str == "" then return 0 end
+
   local len = 0
   local i = 1
   local n = #str
@@ -191,7 +226,10 @@ function NS.Utf8Len(str)
 end
 
 function NS.Utf8Sub(str, numChars)
-  if not str or NS.IsSecretValue(str) then return "" end
+  if not NS.CanAccessValue(str) then return "" end
+  if type(str) ~= "string" or str == "" then return "" end
+
+  numChars = math.max(0, tonumber(numChars) or 0)
   local len = #str
   local count = 0
   local i = 1
@@ -502,11 +540,11 @@ function NS.CollectChatText(chatFrame, maxLines)
   for i = start, n do
     -- GetMessageInfo returns: text, r, g, b, chatTypeID, ...
     local ok, text = pcall(chatFrame.GetMessageInfo, chatFrame, i)
-    if ok and text and not NS.IsSecretValue(text) then
+    if ok and NS.CanAccessValue(text) then
       if type(text) ~= "string" then
         text = NS.SafeToString(text)
       end
-      if type(text) == "string" and text ~= "" then
+      if text ~= "" then
         out[#out + 1] = text
       end
     end
@@ -526,8 +564,13 @@ function NS.CollectChatTextFromFontStrings(chatFrame)
   for _, r in ipairs(regions) do
     if r and r.GetObjectType and r:GetObjectType() == "FontString" and r.GetText then
       local ok, text = pcall(r.GetText, r)
-      if ok and text and type(text) == "string" and text ~= "" and not NS.IsSecretValue(text) then
-        out[#out + 1] = text
+      if ok and NS.CanAccessValue(text) then
+        if type(text) ~= "string" then
+          text = NS.SafeToString(text)
+        end
+        if text ~= "" then
+          out[#out + 1] = text
+        end
       end
     end
   end
