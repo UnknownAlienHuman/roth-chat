@@ -8,7 +8,7 @@ local RothChat = CreateFrame("Frame")
 _G.RothChat = RothChat
 
 RothChat.name = "RothChat"
-RothChat.version = "1.0.1"
+RothChat.version = "1.1.0"
 
 RothChat.modules = {}        -- [moduleName] = moduleTable
 RothChat.moduleOrder = {}    -- ordered list
@@ -255,34 +255,22 @@ local function InitDB()
     end
   end
 
-  -- Profile versioning / minimal migration
+  -- Profile versioning / minimal migration. Version bumps must never overwrite
+  -- explicit feature or module choices that already exist in SavedVariables.
   local prevVersion = RothChatDB.profile.__version
   if prevVersion ~= RothChat.version then
-    -- Ensure core features are on after upgrades (older builds were broken without these).
-    RothChatDB.profile.restoreEnabled = true
-    RothChatDB.profile.immersionEnabled = true
-    RothChatDB.profile.tickerEnabled = true
-    RothChatDB.profile.hoverControls = true
-
-    -- Force-enable critical modules on upgrade (user can disable later in options).
-    RothChatDB.profile.module_Controls_enabled = true
-    RothChatDB.profile.module_CopyOverlay_enabled = true
-    RothChatDB.profile.module_ChatBar_enabled = true
-    RothChatDB.profile.module_Restore_enabled = true
-    RothChatDB.profile.module_Ticker_enabled = true
-    RothChatDB.profile.module_Style_enabled = true
-
-    -- New in v0.9.3: separate fade-in/out durations
+    -- New in v0.9.3: separate fade-in/out durations.
     if RothChatDB.profile.immersionFadeInDuration == nil then RothChatDB.profile.immersionFadeInDuration = 0.12 end
     if RothChatDB.profile.immersionFadeOutDuration == nil then RothChatDB.profile.immersionFadeOutDuration = 0.65 end
     if RothChatDB.profile.hoverFadeInDuration == nil then RothChatDB.profile.hoverFadeInDuration = 0.12 end
     if RothChatDB.profile.hoverFadeOutDuration == nil then RothChatDB.profile.hoverFadeOutDuration = 0.45 end
-    -- Keep legacy single-duration sliders in a sane range
+    -- Keep legacy single-duration sliders in a sane range.
     if type(RothChatDB.profile.hoverFadeDuration) == "number" and RothChatDB.profile.hoverFadeDuration > 1.0 then
       RothChatDB.profile.hoverFadeDuration = RothChatDB.profile.hoverFadeInDuration
     end
 
-    -- History module is legacy (Restore handles persistence); keep it off by default.
+    -- History is legacy (Restore handles persistence); only initialize an
+    -- absent flag. Never flip a value the user explicitly stored.
     if RothChatDB.profile.module_History_enabled == nil then
       RothChatDB.profile.module_History_enabled = false
     end
@@ -291,7 +279,9 @@ local function InitDB()
       RothChatDB.profile.timestampColor = DEFAULTS.profile.timestampColor
     end
 
-    RothChatDB.profile.stylePreset = "minimal"
+    if not hadStylePreset then
+      RothChatDB.profile.stylePreset = InferStylePreset(RothChatDB.profile)
+    end
     if not hadFontPreset then
       RothChatDB.profile.fontPreset = InferFontPreset(RothChatDB.profile)
     end
@@ -453,21 +443,30 @@ local function MultiErrorHandler(err)
   return tostring(err) .. "\n" .. debugstack(2, 25, 25)
 end
 
+-- Preserve both arity and nil positions. Chat filters gained a complete
+-- 19-field contract in Retail 12.1, and future events may grow again.
+local function PackValues(...)
+  return { n = select("#", ...), ... }
+end
+
+local function UnpackValues(values, first)
+  return unpack(values, first or 1, values.n)
+end
+
 local function SafeCallMulti(label, fn, ...)
   if type(fn) ~= "function" then
     return false
   end
 
-  local ok, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14 =
-    xpcall(fn, MultiErrorHandler, ...)
-  if not ok then
+  local results = PackValues(xpcall(fn, MultiErrorHandler, ...))
+  if not results[1] then
     if DEFAULT_CHAT_FRAME then
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffff4040%s error|r: %s", tostring(label or "RothChat"), tostring(r1)))
+      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffff4040%s error|r: %s", tostring(label or "RothChat"), tostring(results[2])))
     end
     return false
   end
 
-  return true, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14
+  return true, UnpackValues(results, 2)
 end
 
 local function GetOrCreateMessageFilterState(self, event)
@@ -480,34 +479,59 @@ local function GetOrCreateMessageFilterState(self, event)
     entries = {},
   }
 
-  -- Message-event filters are only allowed to replace arg1 (display text).
-  -- Returning untouched chat routing args from tainted addon code can poison
-  -- Blizzard's HistoryKeeper / access-ID path for channel and sender metadata.
-  state.dispatcher = function(chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14)
+  -- Module filters may replace visible arg1 only. The dispatcher itself keeps
+  -- the complete incoming tuple and returns a replacement tuple only when text
+  -- actually changed. A no-op `return false` leaves Blizzard's secure tuple
+  -- untouched, reducing taint on routing, sender, line-ID and access metadata.
+  state.dispatcher = function(chatFrame, evt, ...)
+    local args = PackValues(...)
     local current = self._messageFilterState[evt]
     local entries = current and current.entries
     local shouldDiscardMessage = false
+    local transformedMessage = false
 
     if entries then
       for i = 1, #entries do
         local entry = entries[i]
         if entry and entry[1] then
-          local ok, discard, newArg1 =
-            SafeCallMulti("RothChat:MsgFilter:" .. evt, entry[1], chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14)
+          local results = PackValues(
+            SafeCallMulti(
+              "RothChat:MsgFilter:" .. evt,
+              entry[1],
+              chatFrame,
+              evt,
+              UnpackValues(args)
+            )
+          )
 
-          if ok then
+          if results[1] then
+            local discard = results[2]
+            local newArg1 = results[3]
+
             if discard then
               shouldDiscardMessage = true
               break
-            elseif newArg1 ~= nil then
-              arg1 = newArg1
+            elseif newArg1 then
+              args[1] = newArg1
+              if args.n < 1 then
+                args.n = 1
+              end
+              transformedMessage = true
             end
           end
         end
       end
     end
 
-    return shouldDiscardMessage, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14
+    if shouldDiscardMessage then
+      return true
+    end
+
+    if transformedMessage then
+      return false, UnpackValues(args)
+    end
+
+    return false
   end
 
   self._messageFilterState[event] = state

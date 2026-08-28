@@ -1,34 +1,71 @@
 # Roth Chat
 
-Modular immersive Diablo-style chat UI for WoW Midnight. It provides fading chat windows, a ticker, docked controls, channel shortcuts, copy overlays, URL handling, history/restore helpers and optional styling integrations.
+Roth Chat is a modular, immersive chat UI for World of Warcraft Midnight. It combines fading chat windows, a compact last-message ticker, dock-aware controls, channel shortcuts, copy overlays, clickable URLs, persistent scrollback and optional styling.
 
 ## Compatibility
 
-- Interface: `120001`, `120005`
-- Version: `1.0.1`
+- Retail: `12.1.0`
+- Interface: `120100`
+- Addon version: `1.1.0`
 - SavedVariables: `RothChatDB`
-- Author field in TOC: Roth Team
+- Author: Neomorph
+- Verified source baseline: `12.1.0.69497` / `Gethe/wow-ui-source@027d26c3406d`
+
+## Retail 12.1 chat safety
+
+Roth Chat uses one centralized message-filter dispatcher rather than stacking independent Blizzard filters for every module.
+
+- The dispatcher preserves the complete tuple it actually receives; it does not hard-code the old 14-argument shape.
+- A no-op module filter returns only `false`, so Blizzard keeps its existing secure tuple instead of receiving an unnecessary addon-generated replacement.
+- When visible text changes, Roth Chat replaces only `arg1` and returns every remaining field with the original arity and `nil` positions intact.
+- Filter callbacks are optional and stateless because Blizzard may skip insecure callbacks when chat values are inaccessible.
+- Updating the addon no longer force-enables modules or features that a user explicitly disabled.
+
+The implementation notes and remaining live-client matrix are in [`MIGRATION_12_1.md`](MIGRATION_12_1.md).
 
 ## Installation and usage
 
-Copy `RothChat` into `World of Warcraft/_retail_/Interface/AddOns/`, enable it, then reload the UI. Open the options panel with `/rothchat`. The existing text documentation is preserved in [`README.txt`](README.txt).
+Copy the `RothChat` directory into:
 
-## Dependencies
+```text
+World of Warcraft/_retail_/Interface/AddOns/
+```
 
-The addon vendors LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 under `ThirdParty/`. Their license notices must remain with the repository.
+Enable the addon and reload the UI. Use `/rothchat` to open its settings.
 
-## Development status
+## Main features
 
-Current open validation is listed in [`TODO.md`](TODO.md): chat styling/settings, copy overlay, ticker/dock/whisper behavior, syntax validation and HistoryKeeper taint checks. Its opening audit notes are historical context; the checked tasks below them record the completed migrations.
+- Glass-like fading chat presentation and hover controls
+- Configurable ticker for the latest message
+- Dock-aware ChatBar and channel shortcuts
+- Double-click copy overlay
+- Clickable URL handling with a copy popup
+- Persistent per-window scrollback through the `Restore` module
+- Timestamp, color, cleaner, alert, resize and sticky-channel modules
 
-## License
+`History.lua` remains intentionally disabled: `Restore.lua` is the single active persistence owner.
 
-Licensed under the [MIT License](LICENSE.md). Third-party notices are kept
-under [`ThirdParty/`](ThirdParty/).
+## Verification
 
-### Acknowledgements
+GitHub Actions performs:
 
-The visual glass aesthetic and textures are inspired by and directly use
-assets from the original **Glass** addon by **Wowuidev**. Glass is also MIT
-licensed; its full notice remains in
-[`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+- Lua syntax parsing for the addon, vendored libraries and tests;
+- a 19-field chat-filter contract test, including interior `nil` values;
+- TOC metadata checks;
+- validation that every active TOC path exists.
+
+Automated validation does not replace the in-game smoke matrix. Combat, forced chat restrictions, whisper/reply, channels, dock transitions, reload and logout/login persistence still require Retail runtime testing before a packaged release.
+
+## Repository documentation
+
+- [`AGENT_GUIDE.md`](AGENT_GUIDE.md) — engineering invariants and validation rules
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — runtime ownership and data flow
+- [`CODE_INDEX.md`](CODE_INDEX.md) — subsystem map
+- [`CHANGELOG.md`](CHANGELOG.md) — release history
+- [`TODO.md`](TODO.md) — historical audit and remaining checks
+
+## Dependencies and license
+
+The addon vendors LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 under `ThirdParty/`. Their notices must remain in the repository.
+
+Roth Chat is licensed under the [MIT License](LICENSE.md). The visual glass aesthetic and bundled Glass-derived textures retain the original MIT notice in [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).

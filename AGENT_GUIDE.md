@@ -1,38 +1,130 @@
 # Roth Chat agent guide
 
+## Current target
+
+- World of Warcraft Retail `12.1.0`
+- Interface `120100`
+- Roth Chat `1.1.0`
+- Verified Blizzard source baseline `12.1.0.69497` / `Gethe/wow-ui-source@027d26c3406d`
+
+Before changing chat or restriction-sensitive code, read the corresponding material in [`UnknownAlienHuman/wow-addon-engineering-kb`](https://github.com/UnknownAlienHuman/wow-addon-engineering-kb), especially `KB/nodes/BlizzardUI_Chat.md` and `KB/core/BlizzardUI_security.md`.
+
 ## Start here
 
-Read [`RothChat.toc`](RothChat.toc), then [`Util.lua`](Util.lua) and [`Core.lua`](Core.lua). The TOC order is bundled libraries -> `Util.lua` -> `Core.lua` -> registered modules in this exact order: Dock, Style, Controls, ChatBar, Restore, CopyOverlay, UrlCopy, Colors, Resize, Ticker, Timestamps, Cleaner, Alerts, Sticky -> root `Options.lua`. `Modules/History.lua` is deliberately commented out and is legacy code; current persistence is in `Modules/Restore.lua`.
+Read [`RothChat.toc`](RothChat.toc), then [`Util.lua`](Util.lua) and [`Core.lua`](Core.lua).
 
-## Runtime and data flow
+The active load order is:
 
-`Core.lua` creates the addon frame and namespace, initializes `RothChatDB` on `ADDON_LOADED`, enables registered modules, and calls module `OnLogin` methods on `PLAYER_LOGIN`. Its internal bus (`RothChat:On`, `Off`, `Emit`) carries `CHAT_FRAME_READY`, `CHAT_FRAME_CLOSED`, `CHAT_LAYOUT_CHANGED`, `CHAT_FEED`, `CONTROLS_VISIBILITY`, and copy-overlay events. `EnsureChatLifecycleHooks` post-hooks Blizzard `FCF_*` functions and queues a single lifecycle refresh through `Util.lua`.
+1. bundled libraries;
+2. `Util.lua`;
+3. `Core.lua`;
+4. Dock, Style, Controls, ChatBar, Restore, CopyOverlay, UrlCopy, Colors, Resize, Ticker, Timestamps, Cleaner, Alerts and Sticky;
+5. root `Options.lua`.
 
-Modules register with `RothChat:RegisterModule`; each module owns one concern and communicates through the core bus. Message transformations use the centralized priority filter registry (`RegisterMessageFilter`) and one consolidated `AddMessage` hook (`RegisterAddMessageHook`). `Util.lua` supplies protected calls, secret-safe string conversion, chat restriction checks, scheduled jobs, fade updates, frame discovery, text collection, and backdrop helpers.
+`Modules/History.lua` is deliberately excluded. `Modules/Restore.lua` is the only active persistence owner.
 
-## State, surfaces, dependencies
+## Runtime ownership
 
-The only declared SavedVariables root is `RothChatDB`; `Core.lua` owns `RothChatDB.profile` (settings, module enable flags, version) and `RothChatDB.history` (Restore-owned entries). Module toggles are keys named `module_<ModuleName>_enabled`; upgrade migration force-enables critical modules and keeps legacy History disabled by default.
+`Core.lua` owns:
 
-`/rothchat` opens the Settings category (or reports the legacy Interface Options path). `Options.lua` owns the Settings controls and writes through `RothChat:Get`/`Set`, then refreshes affected modules. Bundled libraries are LibStub, CallbackHandler-1.0, and LibSharedMedia-3.0; no external TOC dependency is declared.
+- `RothChatDB` initialization and migrations;
+- module registration and enablement;
+- the internal event bus;
+- centralized message-event filters;
+- the consolidated `AddMessage` post-hook;
+- Blizzard chat-frame lifecycle routing;
+- combat-deferred work.
 
-## Invariants and risks
+`Util.lua` owns shared safety, restriction checks, scheduling, fading, chat-frame discovery, text collection and visual helpers. Modules own one feature each and communicate through core APIs instead of adding parallel global hooks.
 
-- Keep `Modules/History.lua` disabled unless intentionally replacing Restore; enabling both would duplicate persistence/filtering.
-- Chat text can be restricted/secret. Preserve `NS.IsChatMessagingRestricted`, `IsSecretValue`, `SafeToString`, and `SafeCall` boundaries; do not concatenate untrusted values directly in new hooks.
-- `Util.lua` has two `OnUpdate` drivers (scheduler and fader), but they must be active only while work/fades exist. Do not add permanent per-frame scans.
-- One core `AddMessage` dispatch and priority filters prevent N modules from independently hooking every chat frame. Register/unregister through core ownership APIs.
-- `FCF_*` hooks and chat-frame creation/close paths are lifecycle-sensitive; use `CHAT_FRAME_READY`/`CHAT_LAYOUT_CHANGED` and `NS.Schedule` for deferred geometry.
+## Retail 12.1 message-filter contract
+
+Never hard-code a 14-argument or 19-argument callback signature in the core dispatcher. Preserve the exact tuple received, including interior and trailing `nil` positions.
+
+Module callbacks use this narrow contract:
+
+```lua
+-- No discard and no text change.
+return false
+
+-- Discard the message.
+return true
+
+-- Replace visible arg1 only. Core rebuilds the complete current tuple.
+return false, newArg1
+```
+
+Core rules:
+
+- no-op returns only `false`; Blizzard retains its secure transformed tuple;
+- discard returns only `true`;
+- a truthy replacement updates only `arg1`;
+- the transformed path returns every field received, with the original arity;
+- later Roth Chat filters receive the latest transformed `arg1`;
+- filter failures degrade to a no-op;
+- callbacks are optional and stateless because Blizzard may skip them when values are inaccessible.
+
+Do not return `false, newArg1` directly from an independently registered Blizzard filter unless every remaining current field is also preserved. Do not use a message filter as a guaranteed log or state machine.
+
+The executable contract test is [`tests/core_chat_filter_spec.lua`](tests/core_chat_filter_spec.lua).
+
+## SavedVariables migration rule
+
+`RothChatDB.profile.__version` records the addon version. A version migration may initialize missing fields, normalize obsolete values or retire legacy state, but it must not overwrite explicit feature or module choices.
+
+Module toggles are stored as `module_<ModuleName>_enabled`. Defaults are written only when a key is absent. Raising `RothChat.version` must not re-enable modules the user disabled.
+
+## Restriction and taint boundaries
+
+- Gate secret-capable chat text before comparison, formatting, concatenation, serialization or retention.
+- Preserve `NS.IsChatMessagingRestricted`, `NS.IsSecretValue`, `NS.SafeToString` and `NS.SafeCall` boundaries.
+- Do not replace Blizzard chat globals or `ChatFrameUtil` functions.
+- Use `ChatFrameUtil.AddMessageEventFilter` through `NS.AddMessageEventFilter`; keep the legacy global only as a feature-detected fallback.
+- Do not retain raw chat event payloads in SavedVariables.
+- Protected or settings changes must degrade cleanly during combat and chat lockdown.
+- Do not add retry loops around denied operations.
+
+## Performance invariants
+
+- The scheduler and fader `OnUpdate` handlers run only while work exists.
+- Do not add permanent frame scans or per-message frame/closure creation.
+- Keep one core `AddMessage` hook per chat frame.
+- Register and unregister listeners, filters and hooks through their owner-aware core APIs.
+- Queue chat lifecycle/layout refreshes rather than repeating overlapping `FCF_*` work immediately.
 
 ## Change routing
 
-- Shared safety/scheduling/frame helpers: `Util.lua`.
-- Core bus/module enablement/lifecycle/settings bridge: `Core.lua`.
-- Appearance/geometry: `Modules/Style.lua`, `Colors.lua`, `Resize.lua`, `Dock.lua`.
-- Interaction/copy: `Controls.lua`, `ChatBar.lua`, `CopyOverlay.lua`, `UrlCopy.lua`.
-- Persistence and message behavior: `Restore.lua`, `Ticker.lua`, `Timestamps.lua`, `Cleaner.lua`, `Alerts.lua`, `Sticky.lua`.
-- Controls/settings: root `Options.lua` (not `Modules/Options.lua`).
+- Shared safety, scheduling and frame helpers: `Util.lua`
+- Core bus, module lifecycle, filters and SavedVariables: `Core.lua`
+- Appearance and geometry: `Modules/Style.lua`, `Colors.lua`, `Resize.lua`, `Dock.lua`
+- Interaction and copying: `Controls.lua`, `ChatBar.lua`, `CopyOverlay.lua`, `UrlCopy.lua`
+- Persistence and message behavior: `Restore.lua`, `Ticker.lua`, `Timestamps.lua`, `Cleaner.lua`, `Alerts.lua`, `Sticky.lua`
+- Settings: root `Options.lua`
+- Release/migration evidence: `CHANGELOG.md`, `MIGRATION_12_1.md`
 
 ## Verification
 
-Static: verify the TOC list and that every enabled module calls `RothChat:RegisterModule`; parse Lua and run `git diff --check`. In game, run `/rothchat`, toggle each module, create/close temporary and docked chat frames, test whisper/channel URL filtering, copy overlay, timestamps, and reload persistence. Check combat/chat restriction behavior and that no RothChat/module errors appear. This audit does not claim a live client run.
+Automated validation in `.github/workflows/validate.yml` must pass:
+
+- parse every `.lua` file;
+- run the 19-field dispatcher contract test;
+- verify TOC interface, version and author;
+- verify every active TOC path exists.
+
+Then perform the in-game matrix on Retail:
+
+- fresh login, `/reload`, logout/login;
+- say, party, raid, instance, guild, whisper, reply, Battle.net whisper and numbered channels;
+- messages with and without timestamps/URLs;
+- forced chat restrictions and real restricted content transitions;
+- combat entry/exit;
+- create, dock, select, undock and close chat windows;
+- copy overlay and persistent Restore data;
+- module enable/disable persistence;
+- zero repeating taint, secret-value or forbidden-operation errors.
+
+Static validation does not constitute a live-client pass. Record runtime results in `MIGRATION_12_1.md` before packaging a release.
+
+## Third-party boundary
+
+Do not edit or remove bundled license notices. Glass-derived textures retain their original MIT attribution under `ThirdParty/GLASS_LICENSE.txt`.
