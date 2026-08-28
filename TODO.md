@@ -1,188 +1,117 @@
 # RothChat TODO
 
+## Current target
 
+- World of Warcraft Retail / Midnight `12.1.0`
+- Interface `120100`
+- Roth Chat `1.1.0`
+- Blizzard source baseline: build `12.1.0.69497`, commit `027d26c3406d3de2cbd2b1f67d468fe033a1bcd4`
 
-Проблемы:
+## Retail 12.1 migration
 
-1) ~~Текст копируется не там, где выделяем~~ — ИСПРАВЛЕНО: убран ScrollingEditBoxTemplate (рассинхронизация scroll/selection), всегда используется UIPanelScrollFrameTemplate + plain EditBox; убрано автовыделение всего текста при открытии.
-2) ~~В бою нельзя печатать~~ — ИСПРАВЛЕНО: добавлены хуки OnEditFocusGained/OnEditFocusLost на EditBox в Controls.lua — когда игрок нажимает Enter, Controls видит фокус и не прячет UI.
+Implemented on `update/retail-12.1.0-chat-contract`:
 
-## Audit Summary
+- [x] Update TOC metadata to Interface `120100`, version `1.1.0`, author Neomorph.
+- [x] Expand the centralized message-filter dispatcher from the obsolete 14-field shape to Blizzard's full 19-argument contract.
+- [x] Preserve and return every routing, sender, line-ID, access-ID, and metadata field unchanged.
+- [x] Restrict Roth Chat filter transformations to `arg1`, the visible message text.
+- [x] Gate the complete incoming filter tuple with `canaccessallvalues` before addon callbacks.
+- [x] Add shared `canaccessvalue` / `canaccessallvalues` wrappers with conservative fallback behavior.
+- [x] Gate string conversion, truncation, UTF-8 work, chat text collection, URL parsing, timestamps, copy extraction, and whisper `lineID` use before any Lua inspection.
+- [x] Stop forwarding trailing `AddMessage` varargs into addon modules; expose only accessible rendered text and color primitives.
+- [x] Keep inaccessible filter callbacks fail-closed without copying or retaining their payload.
+- [x] Make profile migration additive so upgrades preserve explicitly disabled modules and features.
+- [x] Update README, architecture, agent guide, and extended feature documentation.
+- [x] Add a GitHub Actions Lua 5.1 syntax gate for first-party addon files.
 
-- `Options.lua` still uses a legacy canvas with `InterfaceOptions*` templates and old dropdown widgets. The addon is registered in `Settings`, but the controls themselves are not migrated to the modern Blizzard Settings API.
-- The current UI removed manual style controls even though `Style.lua` still supports `styleBgTexture`, `styleBorderTexture`, `styleBackgroundColor`, and `styleBorderColor`.
-- `Core.lua` still defaults to non-minimal presets (`glass`, `solid`) and exposes theme-preset plumbing the user no longer wants.
-- Runtime overhead is concentrated in three places:
-  - `Controls.lua`: delayed hover checks via repeated `C_Timer.After(delay, ...)` and next-frame work via `C_Timer.After(0, ...)`.
-  - `Ticker.lua`: message queue uses `table.remove(q, 1)` and schedules a fresh `C_Timer.After(...)` after every animation step.
-  - Addon-wide next-frame work is fragmented across `Core.lua`, `Controls.lua`, `Dock.lua`, `CopyOverlay.lua`, `Style.lua`, and `Ticker.lua`.
-- A config bug exists today: `Controls.lua` reads `smoothScrollDuration`, but that key is never defaulted in `Core.lua`.
+## Release-blocking live-client validation
 
-## Task 1 - Settings API migration and style feature restore
+These items cannot be certified by static source review and must be run in the target WoW client before publishing 1.1.0:
 
-- [x] Replace the legacy custom options panel with Blizzard `Settings` vertical-layout categories/subcategories.
-- [x] Keep a single visual baseline: `Minimal` is the default profile style.
-- [x] Remove user-facing theme presets (`glass`, `solid`) from the settings UI.
-- [x] Restore manual style controls:
-  - [x] background on/off
-  - [x] background alpha
-  - [x] background fill color
-  - [x] background texture selection
-  - [x] border on/off
-  - [x] border color
-  - [x] border texture selection
-  - [x] font selection
-  - [x] font size
-  - [x] text shadow
-  - [x] timestamp toggle/color
-  - [x] edit box position
-- [x] Source background/border/font lists from LibSharedMedia when available.
-- [x] Add fallback built-in media entries so the dropdowns still work without external shared media packs.
-- [x] Stop calling `ApplyModuleEnablement()` for every non-module setting change; use targeted refresh/apply paths instead.
-- [x] Preserve slash-command opening through `Settings.OpenToCategory(categoryID)`.
+### Installation and profile migration
 
-Commit target:
-- `RothChat: migrate settings and restore manual style controls`
+- [ ] Clean install with no `RothChatDB`.
+- [ ] Upgrade an existing 1.0.1 profile and confirm explicitly disabled modules remain disabled.
+- [ ] Reload and relog; confirm settings and restored scrollback remain valid.
 
-## Task 2 - Scheduler and hot-path optimization
+### Chat message matrix
 
-- [x] Add one shared next-frame scheduler utility and replace addon-local `C_Timer.After(0, ...)` fan-out with it.
-- [x] Fix missing `smoothScrollDuration` default in `Core.lua`.
-- [x] Replace `Controls.lua` hover-delay timer spam with one lightweight scheduler/driver.
-- [x] Replace `Controls.lua` hotspot-bounds next-frame timer with the shared next-frame scheduler.
-- [x] Keep `Controls.lua` smooth-scroll animation behavior, but avoid unnecessary per-frame config lookups where possible.
-- [x] Convert `Ticker.lua` queue from `table.remove(q, 1)` to indexed queue bookkeeping.
-- [x] Remove per-message `C_Timer.After(...)` chaining in `Ticker.lua`; keep the animation/hold cycle inside ticker state.
-- [x] Ensure ticker fade/hold behavior still matches current UX when chat is hidden.
-- [x] Replace remaining zero-delay timers in `Dock.lua`, `CopyOverlay.lua`, `Style.lua`, and `Core.lua` with the shared scheduler.
+- [ ] Say, yell, emote, text emote.
+- [ ] Party / party leader.
+- [ ] Raid / raid leader / raid warning.
+- [ ] Instance chat / instance leader.
+- [ ] Guild / officer.
+- [ ] Numbered channels.
+- [ ] Whisper, outgoing whisper, Battle.net whisper, outgoing Battle.net whisper.
+- [ ] System, achievement, guild achievement.
+- [ ] Monster say/yell/whisper and encounter-generated messages.
+- [ ] Confirm timestamps and URL conversion affect only visible text and never corrupt sender/channel metadata.
 
-Commit target:
-- `RothChat: optimize chat schedulers and ticker queue`
+### Restrictions and taint
 
-## Task 3 - Verification and cleanup
+- [ ] Enter and leave combat while the edit box, ChatBar, copy overlay, and settings are used.
+- [ ] Exercise chat messaging lockdown/restricted contexts.
+- [ ] Confirm inaccessible callbacks are skipped silently.
+- [ ] Confirm no `HistoryKeeper`, secret-value, taint, forbidden-action, or repeating Lua errors.
+- [ ] Confirm no malformed access ID, line ID, sender, or channel routing after filters run.
 
-- [ ] Verify `Style.lua` still applies restored background and border media correctly.
-- [ ] Verify settings changes update live without duplicate module enable paths.
-- [ ] Verify copy overlay still opens on double-click and restores prior chat alpha/state.
-- [ ] Verify primary chat ticker still works and non-primary frames stay visible.
-- [ ] Run a syntax pass against changed Lua files if a Lua compiler is available in the workspace.
-- [x] Update this `todo.md` with completed items.
+### Chat-frame lifecycle
 
-Verification notes:
+- [ ] Create, select, undock, redock, and close normal chat windows.
+- [ ] Open and close temporary whisper windows.
+- [ ] Confirm temporary whisper target headers and edit-box insets remain visible.
+- [ ] Confirm ChatBar follows the active dock tab.
+- [ ] Confirm inactive-tab alerts start on new messages and stop when the tab is selected.
 
-- Local static pass completed:
-  - `git diff --check` is clean.
-  - `C_Timer.After(...)` and `table.remove(q, 1)` are gone from the addon.
-  - `Options.lua` now registers through Blizzard `Settings` vertical layout categories/subcategories.
-  - `CopyOverlay.lua` now exposes `Refresh`, so font/style changes can propagate to existing overlays.
-- Runtime verification is still required in the WoW client for:
-  - live style media changes
-  - double-click copy overlay behavior
-  - ticker visibility/hold timing
-  - interaction between `Controls`, `Ticker`, and `CopyOverlay`
-- Lua compiler check was not possible here because `lua`/`luac` is not installed in this workspace.
+### Interaction and presentation
 
-Commit target:
-- `RothChat: finalize settings and performance pass`
+- [ ] `/rothchat` opens outside restricted state and degrades cleanly inside restricted state.
+- [ ] Style background, border, fonts, shadow, and edit-box position update live.
+- [ ] Double-click copy overlay selects/copies the intended text and restores prior chat alpha.
+- [ ] URL popup copies the expected target.
+- [ ] Ticker/immersion behavior is correct for the primary frame and does not hide non-primary frames.
+- [ ] Smooth scrolling and resize snap-back remain correct.
 
-## Task 4 - Chat taint hotfix
+### Performance
 
-- [x] Trace the `HistoryKeeper.lua` secret-string error to `RothChat` chat-path taint.
-- [x] Remove the direct `ChatFrameUtil.ResolvePrefixedChannelName` overwrite from `Modules/Cleaner.lua`.
-- [x] Keep Cleaner limited to safe chat format-string customization.
-- [ ] Verify in the WoW client that `CHAT_MSG_MONSTER_YELL` no longer throws `HistoryKeeper` taint errors.
-- [ ] Verify Cleaner formatting remains acceptable with `Shorten Channels` enabled.
+- [ ] Confirm no permanent scheduler/fader `OnUpdate` after work completes.
+- [ ] Stress incoming chat, scrolling, hover transitions, ticker playback, and temporary-window creation.
+- [ ] Compare CPU/FPS with modules enabled and disabled; investigate any repeating callback or allocation spike.
 
-Verification notes:
+## Static validation
 
-- Blizzard chat source shows `ChatFrameOverrides.lua` now routes `MONSTER_YELL` through `ChatHistory_GetAccessID(infoType, chatTarget, arg12 or arg13)`.
-- Overwriting `ChatFrameUtil.ResolvePrefixedChannelName` taints the shared `ChatFrameUtil` table and is not a safe hook strategy for this path.
-- Local static verification completed:
-  - no `ResolvePrefixedChannelName =` assignment remains in `RothChat` Lua sources
-  - `git diff --check -- _Addons/RothChat` is clean
-- Runtime validation is still required because secret-value taint is runtime-only.
+- [x] Branch is based directly on `main` and contains only scoped addon, documentation, and CI changes.
+- [x] Review confirms the dispatcher signature and return path contain all 19 arguments.
+- [x] Review confirms first-party filters replace only `arg1`.
+- [x] Review confirms direct whisper `lineID` use is access-gated before type, comparison, arithmetic, or table-key use.
+- [x] Review confirms render-facing consumers no longer receive opaque `AddMessage` trailing metadata.
+- [ ] GitHub Actions Lua 5.1 syntax workflow passes for the final branch head.
+- [ ] Final pull-request diff and whitespace review passes after documentation is complete.
 
-Commit target:
-- `RothChat: stop tainting chat history routing`
+Static validation does not substitute for the live-client matrix above.
 
-## Task 5 - Chat restriction guards
+## Previously completed engineering work
 
-- [x] Add a shared helper for `C_ChatInfo.InChatMessagingLockdown()`.
-- [x] Guard `/rothchat` settings opening against restricted chat/settings surfaces.
-- [x] Guard `ChatBar` channel buttons against chat messaging lockdown.
-- [x] Run static verification for the new guards.
+The following work predates the 12.1 migration and remains part of the current design:
 
-Verification notes:
+- [x] Replace legacy options UI with Blizzard Settings vertical-layout categories and subcategories.
+- [x] Restore manual font, background, border, color, alpha, timestamp, and edit-box controls.
+- [x] Add targeted module refreshes instead of re-enabling every module for ordinary setting changes.
+- [x] Consolidate next-frame and delayed work in the shared scheduler.
+- [x] Replace ticker front-removal and chained timer behavior with indexed queue/state processing.
+- [x] Remove direct replacement of `ChatFrameUtil.ResolvePrefixedChannelName`.
+- [x] Add shared chat-lockdown/settings guards.
+- [x] Make ChatBar follow the selected dock frame.
+- [x] Restore Blizzard unread whisper-tab glow.
+- [x] Add general inactive dock-tab alerting through Blizzard `FCF_StartAlertFlash` / `FCF_StopAlertFlash` from the post-render hook.
+- [x] Preserve Blizzard-computed temporary whisper edit-box header insets.
+- [x] Fix copy-overlay selection/scroll synchronization by using `UIPanelScrollFrameTemplate` with a plain multiline EditBox.
+- [x] Keep chat controls visible while the edit box has focus.
 
-- Added `NS.IsChatMessagingRestricted()` and `NS.IsSettingsOpenRestricted()` for shared guard logic.
-- `/rothchat` now exits early instead of calling `Settings.OpenToCategory` during combat/chat restriction surfaces.
-- `ChatBar` now exits early instead of calling `ChatFrame_OpenChat` during chat messaging lockdown, with a small print throttle.
-- `git diff --check -- _Addons/RothChat` is clean.
+## Design decisions
 
-Commit target:
-- `RothChat: guard chat lockdown surfaces`
-
-## Task 6 - Chat filter taint and docked ChatBar
-
-- [x] Stop tainting non-message chat event args in the shared message-filter dispatcher.
-- [x] Update message-filter users to return a replacement only when the visible message actually changes.
-- [x] Make ChatBar follow the active dock tab instead of sticking to the original chat frame.
-- [x] Run static verification for the dispatcher and ChatBar fixes.
-
-Verification notes:
-
-- `Core.lua` message filters now only allow `arg1` replacement, which avoids tainting channel/sender routing args used by Blizzard `HistoryKeeper`.
-- `Timestamps.lua` and `UrlCopy.lua` now return no replacement when the rendered message text does not change.
-- `ChatBar.lua` now resolves the active dock frame and re-applies itself on `CHAT_LAYOUT_CHANGED` / `CHAT_FRAME_READY`.
-- `git diff --check -- _Addons/RothChat` is clean.
-
-Commit target:
-- `RothChat: fix chat filter taint and docked chat bar`
-
-## Task 7 - Restore unread tab glow
-
-- [x] Trace the missing new-message tab highlight to `Style.lua` suppressing `ChatFrameXTabGlow`.
-- [x] Stop forcing the Blizzard tab glow alpha to `0` so whisper unread flash can render again.
-- [ ] Verify in the WoW client that inactive whisper tabs glow again on incoming whispers.
-
-Verification notes:
-
-- Blizzard `FloatingChatFrame.xml` defines `$parentGlow` with `parentKey="glow"` and `alphaMode="ADD"` for chat tabs.
-- Blizzard `FCF_StartAlertFlash` drives unread tab flash through `UIFrameFlash(chatTab.glow, ...)`.
-- Blizzard `ChatFrameUtil.FlashTabIfNotShown` only starts this flash for whisper-style message types (`WHISPER`, `BN_WHISPER`, `MONSTER_WHISPER`), so ordinary chat tabs still will not flash unless custom logic is added later.
-
-Commit target:
-- `RothChat: restore unread chat tab glow`
-
-## Task 8 - General inactive-tab alerting
-
-- [x] Reuse Blizzard `FCF_StartAlertFlash` / `FCF_StopAlertFlash` for RothChat inactive dock tabs.
-- [x] Drive the alert from the shared `AddMessage` hook instead of replacing Blizzard chat routing.
-- [x] Clear alert state when the tab becomes the selected dock frame.
-- [x] Update the settings copy so the module reflects both whisper sound and inactive-tab glow behavior.
-- [ ] Verify in the WoW client that any new message in a non-selected dock tab starts the tab glow and stops when the tab is selected.
-
-Verification notes:
-
-- `FCF_StartAlertFlash` / `FCF_StopAlertFlash` are confirmed in Blizzard `FloatingChatFrame.lua` for the current build, even though they are not indexed by the `wow-api` lookup dataset.
-- RothChat now calls those Blizzard functions from the existing safe post-`AddMessage` dispatcher in `Core.lua`, which avoids replacing chat handlers or filters.
-- The module remains dock-tab scoped; it does not add custom flashing for visible/selected frames.
-
-Commit target:
-- `RothChat: alert inactive chat tabs on new messages`
-
-## Task 9 - Temporary whisper window header/edit box fix
-
-- [x] Trace the missing whisper target name to RothChat restyling the chat edit box after Blizzard `UpdateHeader()`.
-- [x] Preserve Blizzard-calculated edit box left/right insets for temporary whisper windows instead of forcing fixed insets.
-- [x] Re-run the inset adjustment after edit box header updates so new temporary chat windows keep the target name visible.
-- [ ] Verify in the WoW client that new whisper popout windows show the interlocutor name in the header and no longer display a blank rectangular edit box.
-
-Verification notes:
-
-- Blizzard `FloatingChatFrame.lua` sets the temporary whisper window name from `chatTarget` via `FCF_SetWindowName(chatFrame, name)` and assigns the edit box tell target via `chatFrame.editBox:SetTellTarget(chatTarget)`.
-- Blizzard `ChatFrameEditBoxMixin:UpdateHeader()` then computes the left text inset from the whisper header width; overriding it with fixed `SetTextInsets(8, 8, 4, 4)` hides the target label.
-- `Style.lua` now hooks `UpdateHeader()` and only clamps padding while preserving Blizzard's computed header space.
-
-Commit target:
-- `RothChat: fix temporary whisper header and edit box`
+- `Modules/History.lua` remains disabled. `Modules/Restore.lua` is the sole persistence path.
+- One core message-filter registry and one post-`AddMessage` dispatcher are preferred over module-owned hooks on every chat frame.
+- Blizzard shared chat globals and `ChatFrameUtil` functions must not be replaced.
+- Raw event/filter tuples and opaque metadata must not enter feature state, queues, timers, closures, logs, or SavedVariables.
+- Only access-normalized rendered text and ordinary primitives may cross from the chat boundary into Roth Chat modules.
