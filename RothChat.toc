@@ -2,10 +2,10 @@
 ## Title: Roth Chat
 ## Notes: Modular immersive chat UI for Roth (Diablo-style).
 ## Author: Neomorph
-## Version: 1.1.0
+## Version: 1.1.1
 ## SavedVariables: RothChatDB
 ## Category-enUS: Chat
-## Category-ruRU: Чат
+## Category-ruRU: Chat
 
 # Libraries
 ThirdParty\LibStub\LibStub.lua
