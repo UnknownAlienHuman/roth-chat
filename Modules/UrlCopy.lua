@@ -34,11 +34,11 @@ local FILTER_EVENTS = {
 }
 
 local function UrlCopyEnabled()
-  return RothChat and RothChat.IsModuleEnabled and RothChat:IsModuleEnabled("UrlCopy")
+  return RothChat and RothChat.IsModuleActive and RothChat:IsModuleActive("UrlCopy")
 end
 
 local function IsSafeChatString(v)
-  return type(v) == "string" and not NS.IsSecretValue(v)
+  return type(v) == "string" and (not NS.CanAccessValue or NS.CanAccessValue(v))
 end
 
 local function AllowLinkify()
@@ -61,11 +61,34 @@ local function HasUrlHints(msg)
   return false
 end
 
+local function CountPlain(text, needle)
+  local count = 0
+  local start = 1
+  while true do
+    local pos = text:find(needle, start, true)
+    if not pos then return count end
+    count = count + 1
+    start = pos + 1
+  end
+end
+
+local function IsUnmatchedCloser(url, ch)
+  if ch == ")" then
+    return CountPlain(url, ")") > CountPlain(url, "(")
+  elseif ch == "]" then
+    return CountPlain(url, "]") > CountPlain(url, "[")
+  elseif ch == "}" then
+    return CountPlain(url, "}") > CountPlain(url, "{")
+  end
+  return false
+end
+
 local function StripTrailingPunct(url)
   local trail = ""
   while url ~= "" do
     local ch = url:sub(-1)
-    if ch:match("[%.%,%:%;%!%?%)%]%}]") then
+    local strip = ch:match("[%.%,%:%;%!%?]") ~= nil or IsUnmatchedCloser(url, ch)
+    if strip then
       trail = ch .. trail
       url = url:sub(1, -2)
     else
@@ -207,6 +230,7 @@ end
 
 local function ShowPopup(url)
   if not UrlCopyEnabled() then return end
+  if not IsSafeChatString(url) or url == "" then return end
 
   local popupName = "RothChat_UrlCopyPopup"
   local f = _G[popupName]
@@ -233,7 +257,6 @@ local function ShowPopup(url)
     eb:SetScript("OnEscapePressed", function() f:Hide() end)
     eb:SetScript("OnEnterPressed", function() f:Hide() end)
 
-    -- Close button
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 0, 0)
   end
@@ -254,7 +277,7 @@ local function RegisterLinkHandler()
   if _G.LinkUtil and type(_G.LinkUtil.RegisterLinkHandler) == "function" then
     _G.LinkUtil.RegisterLinkHandler(LINK_TYPE, function(link, text, linkData, contextData)
       local url = linkData and linkData.options or ""
-      if type(url) == "string" and url ~= "" then
+      if IsSafeChatString(url) and url ~= "" then
         ShowPopup(url)
       end
       return _G.LinkProcessorResponse and _G.LinkProcessorResponse.Handled or nil
