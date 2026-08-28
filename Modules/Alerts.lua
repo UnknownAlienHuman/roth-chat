@@ -101,12 +101,24 @@ local function ShouldHandleLine(lineID, now)
   return true
 end
 
+local function GetAccessibleLineID(...)
+  -- CHAT_MSG_* payload: lineID is argument #11. Select does not inspect the
+  -- value; access must still be checked before type/comparison/table use.
+  local lineID = select(11, ...)
+  if not NS.CanAccessValue(lineID) then
+    return nil
+  end
+  if type(lineID) ~= "number" then
+    return nil
+  end
+  return lineID
+end
+
 local function OnWhisperEvent(_, _, ...)
   local now = GetTime()
   PruneSeen(now)
 
-  -- CHAT_MSG_* payload: lineID is argument #11.
-  local lineID = select(11, ...)
+  local lineID = GetAccessibleLineID(...)
   if not ShouldHandleLine(lineID, now) then
     return
   end
