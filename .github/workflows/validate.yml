@@ -40,6 +40,9 @@ jobs:
       - name: Verify URL transformation contract
         run: lua5.4 tests/url_copy_spec.lua
 
+      - name: Verify Cleaner localization contract
+        run: lua5.4 tests/cleaner_spec.lua
+
       - name: Verify TOC metadata and load paths
         run: |
           grep -Fxq '## Interface: 120100' RothChat.toc
