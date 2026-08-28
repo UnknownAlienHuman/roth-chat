@@ -3,8 +3,8 @@
 --   * Fade Blizzard chat chrome + Roth extras in/out on hover
 --   * Provide a "pin" button: keep controls visible until unpinned
 --   * Provide a central hover registry (other modules register their frames)
---   * OVERRIDE Blizzard's FCF_Fade logic to prevent conflicts.
---   * Fast Scroll logic.
+--   * Cooperate with Blizzard's FCF_Fade logic without replacing globals
+--   * Fast and smooth scroll logic
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -19,8 +19,11 @@ local state = {
   perChat = {},
 }
 local controlsActive = false
+local lifecycleListenersRegistered = false
 
 local UpdateForChat -- forward
+local RegisterHoverFrame -- forward
+local UnregisterHoverFrame -- forward
 
 local function ControlsEnabled(core)
   return controlsActive
@@ -65,6 +68,14 @@ local function AddUnique(list, frame)
   list[#list + 1] = frame
 end
 
+local function RemoveFrame(list, frame)
+  for i = #list, 1, -1 do
+    if list[i] == frame then
+      table.remove(list, i)
+    end
+  end
+end
+
 local function SetFrameMouseForVisibility(frame, visible)
   if not frame or not frame.EnableMouse then return end
   -- Dock tabs must stay clickable even when their chat window is not currently active.
@@ -100,20 +111,21 @@ end
 local function IsAnyMouseOver(cf, st)
   if not IsInteractableChatFrame(cf) then return false end
   if cf.__rothResizing then return true end
-  -- Treat active chat input as "interaction" (prevents chat hiding while typing).
-  -- This also covers cases where the cursor is not over the chat area.
+
+  -- Treat active chat input as interaction, even if the cursor is elsewhere.
   do
     local name = cf and cf.GetName and cf:GetName()
     local eb = name and _G[name .. "EditBox"]
     if eb then
       local ok, active = pcall(function()
-        return (ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow())
+        return ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow()
       end)
       if (ok and active and active == eb) or (eb.HasFocus and eb:HasFocus()) then
         return true
       end
     end
   end
+
   if st.hotspot and st.hotspot:IsMouseOver() then return true end
   if cf and cf:IsMouseOver() then return true end
   if st.button and st.button:IsMouseOver() then return true end
@@ -190,7 +202,6 @@ local function CreateHotspot(core, cf)
   hs:EnableMouse(true)
   hs:Hide()
 
-  -- Ensure hotspot is completely invisible (no backdrop, no textures)
   if hs.SetBackdrop then hs:SetBackdrop(nil) end
 
   hs:SetScript("OnEnter", function()
@@ -216,7 +227,6 @@ local function SetControlsVisible(core, cf, visible)
   local durIn = tonumber(core:Get("hoverFadeInDuration")) or tonumber(core:Get("hoverFadeDuration")) or 0.14
   local durOut = tonumber(core:Get("hoverFadeOutDuration")) or tonumber(core:Get("hoverFadeDuration")) or 0.35
   local dur = visible and durIn or durOut
-
   local target = visible and shownAlpha or hiddenAlpha
 
   for _, f in ipairs(st.frames) do
@@ -323,10 +333,8 @@ local function CreatePinButton(core, cf)
   b:EnableMouse(true)
   b:SetAlpha(0.0)
 
-  -- Backdrop with border.TGA
   NS.ApplyGlassBackdrop(b, 0.8, 0, 0)
 
-  -- Icon from icons.TGA atlas — MINIMIZE for unpinned, MAXIMIZE for pinned
   local tc = NS.BUTTON_ICONS.MINIMIZE
   local tex = b:CreateTexture(nil, "ARTWORK")
   tex:SetPoint("TOPLEFT", 2, -2)
@@ -335,7 +343,6 @@ local function CreatePinButton(core, cf)
   tex:SetTexCoord(tc[1], tc[2], tc[3], tc[4])
   b.__tex = tex
 
-  -- 3-part highlight
   NS.CreateHighlight(b, "HIGHLIGHT", nil, nil, nil, 0)
 
   b:SetScript("OnEnter", function()
@@ -387,12 +394,33 @@ local function outCubic(t, b, c, d)
   return c * (t ^ 3 + 1) + b
 end
 
+local function ResetSmoothScroll(cf)
+  if not cf then return end
+  local scrollFrame = cf.__rothSmoothScroll
+  if scrollFrame then
+    scrollFrame.offset = 0
+    scrollFrame.startOffset = 0
+    scrollFrame.startTime = 0
+    scrollFrame:Hide()
+  end
+
+  local fsc = cf.FontStringContainer
+  if fsc then
+    fsc:ClearAllPoints()
+    fsc:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, 0)
+    fsc:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 0, 0)
+  end
+end
+
 local function HookScroll(core, cf)
   if cf.__rothScrollHooked then return end
   cf.__rothScrollHooked = true
 
   cf:EnableMouseWheel(true)
-  cf:SetClipsChildren(true) -- ensure the offset text doesn't spill over
+  if type(cf.GetClipsChildren) == "function" then
+    cf.__rothOriginalClipsChildren = cf:GetClipsChildren()
+  end
+  cf:SetClipsChildren(true)
 
   local fsc = cf.FontStringContainer
   local scrollFrame = CreateFrame("Frame", nil, cf)
@@ -402,22 +430,18 @@ local function HookScroll(core, cf)
   scrollFrame.startTime = 0
   scrollFrame.duration = tonumber(core:Get("smoothScrollDuration")) or 0.25
   scrollFrame:Hide()
-  scrollFrame:SetScript("OnUpdate", function(f, elapsed)
+  scrollFrame:SetScript("OnUpdate", function(f)
     if not fsc then
       f:Hide()
       return
     end
 
     local now = GetTime()
-    local duration = f.duration or 0.25
+    local duration = math.max(0.01, tonumber(f.duration) or 0.25)
     local t = now - (f.startTime or now)
 
     if t >= duration then
-      f.offset = 0
-      fsc:ClearAllPoints()
-      fsc:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, 0)
-      fsc:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 0, 0)
-      f:Hide()
+      ResetSmoothScroll(cf)
     else
       f.offset = outCubic(t, f.startOffset, 0 - f.startOffset, duration)
       fsc:ClearAllPoints()
@@ -429,99 +453,137 @@ local function HookScroll(core, cf)
   cf:HookScript("OnMouseWheel", function(self, delta)
     if not ControlsEnabled(core) then return end
     if IsShiftKeyDown() then
+      ResetSmoothScroll(self)
       if delta > 0 then
         self:ScrollToTop()
-        scrollFrame.offset = 0
-        scrollFrame:Hide()
       else
         self:ScrollToBottom()
-        scrollFrame.offset = 0
-        scrollFrame:Hide()
+      end
+      return
+    end
+
+    local num = 3
+    if not core:Get("smoothScrollEnabled") then
+      ResetSmoothScroll(self)
+      if delta > 0 then
+        for _ = 1, num do self:ScrollUp() end
+      else
+        for _ = 1, num do self:ScrollDown() end
+      end
+      return
+    end
+
+    local _, fontSize = self:GetFont()
+    fontSize = tonumber(fontSize) or 12
+    local distance = fontSize + (tonumber(self:GetSpacing()) or 0)
+    if distance <= 0 then return end
+
+    scrollFrame.duration = math.max(0.01, tonumber(core:Get("smoothScrollDuration")) or 0.25)
+    local moved = false
+
+    if delta > 0 then
+      local offsetBefore = self:GetScrollOffset()
+      for _ = 1, num do self:ScrollUp() end
+      local offsetAfter = self:GetScrollOffset()
+      local diff = offsetAfter - offsetBefore
+      if diff > 0 then
+        scrollFrame.offset = scrollFrame.offset + (distance * diff)
+        moved = true
       end
     else
-      local num = 3
-      if not core:Get("smoothScrollEnabled") then
-        if delta > 0 then
-          for i = 1, num do self:ScrollUp() end
-        else
-          for i = 1, num do self:ScrollDown() end
-        end
-        return
+      local offsetBefore = self:GetScrollOffset()
+      for _ = 1, num do self:ScrollDown() end
+      local offsetAfter = self:GetScrollOffset()
+      local diff = offsetBefore - offsetAfter
+      if diff > 0 then
+        scrollFrame.offset = scrollFrame.offset - (distance * diff)
+        moved = true
       end
+    end
 
-      local _, fontSize = self:GetFont()
-      local distance = (fontSize + (self:GetSpacing() or 0))
-      scrollFrame.duration = tonumber(core:Get("smoothScrollDuration")) or 0.25
-
-      if delta > 0 then
-        local offsetBefore = self:GetScrollOffset()
-        for i = 1, num do self:ScrollUp() end
-        local offsetAfter = self:GetScrollOffset()
-        local diff = offsetAfter - offsetBefore
-        if diff > 0 then
-          scrollFrame.offset = scrollFrame.offset + (distance * diff)
-          scrollFrame.startOffset = scrollFrame.offset
-          scrollFrame.startTime = GetTime()
-        end
-      else
-        local offsetBefore = self:GetScrollOffset()
-        for i = 1, num do self:ScrollDown() end
-        local offsetAfter = self:GetScrollOffset()
-        local diff = offsetBefore - offsetAfter
-        if diff > 0 then
-          scrollFrame.offset = scrollFrame.offset - (distance * diff)
-          scrollFrame.startOffset = scrollFrame.offset
-          scrollFrame.startTime = GetTime()
-        end
-      end
-
+    if moved then
       scrollFrame.offset = NS.Clamp(scrollFrame.offset, -distance * 6, distance * 6)
       scrollFrame.startOffset = scrollFrame.offset
       scrollFrame.startTime = GetTime()
       scrollFrame:Show()
     end
   end)
-
-  -- AddMessage smooth-scroll animation is handled by the unified dispatcher.
-  -- See OnSmoothScrollAddMessage below.
 end
 
--- Unified AddMessage hook callback for smooth scroll (registered via core:RegisterAddMessageHook).
+-- Unified AddMessage hook callback for smooth scroll.
 local function OnSmoothScrollAddMessage(chatFrame)
   if not controlsActive then return end
   local core = M and M.core
   if not core or not core:Get("smoothScrollEnabled") then return end
   if not chatFrame:IsVisible() then return end
-
   if type(chatFrame.GetScrollOffset) == "function" and chatFrame:GetScrollOffset() ~= 0 then return end
 
   local sf = chatFrame.__rothSmoothScroll
   if not sf then return end
 
   local _, fontSize = chatFrame:GetFont()
-  local distance = (fontSize + (chatFrame:GetSpacing() or 0))
+  fontSize = tonumber(fontSize) or 12
+  local distance = fontSize + (tonumber(chatFrame:GetSpacing()) or 0)
+  if distance <= 0 then return end
 
-  sf.offset = sf.offset - distance
-  sf.offset = NS.Clamp(sf.offset, -distance * 6, 0)
+  sf.offset = NS.Clamp(sf.offset - distance, -distance * 6, 0)
   sf.startOffset = sf.offset
   sf.startTime = GetTime()
   sf:Show()
 end
 
-local function HookAccessoryHover(core, cf, frame)
-  if not frame or frame.__rothHoverHooked then return end
+local function HookAccessoryHover(core, frame)
+  if not frame then return end
+  frame.__rothHoverChats = frame.__rothHoverChats or {}
+  if frame.__rothHoverHooked then return end
   frame.__rothHoverHooked = true
 
-  frame:HookScript("OnEnter", function()
+  frame:HookScript("OnEnter", function(self)
     if not ControlsEnabled(core) then return end
-    GetOrCreateChatState(cf).hovering = true
-    UpdateForChat(core, cf)
+    local owners = self.__rothHoverChats
+    if not owners then return end
+    for cf in pairs(owners) do
+      local st = state.perChat[cf]
+      if st then
+        st.hovering = true
+        UpdateForChat(core, cf)
+      end
+    end
   end)
 
-  frame:HookScript("OnLeave", function()
+  frame:HookScript("OnLeave", function(self)
     if not ControlsEnabled(core) then return end
-    ScheduleHoverRecalc(core, cf)
+    local owners = self.__rothHoverChats
+    if not owners then return end
+    for cf in pairs(owners) do
+      ScheduleHoverRecalc(core, cf)
+    end
   end)
+end
+
+RegisterHoverFrame = function(core, cf, frame)
+  if not cf or not frame then return end
+  local st = GetOrCreateChatState(cf)
+  AddUnique(st.frames, frame)
+  frame.__rothHoverChats = frame.__rothHoverChats or {}
+  frame.__rothHoverChats[cf] = true
+  HookAccessoryHover(core, frame)
+  RequestHotspotBoundsUpdate(core, cf)
+  UpdateForChat(core, cf)
+end
+
+UnregisterHoverFrame = function(core, cf, frame)
+  if not cf or not frame then return end
+  local st = state.perChat[cf]
+  if st then
+    RemoveFrame(st.frames, frame)
+    st.hovering = IsAnyMouseOver(cf, st)
+    RequestHotspotBoundsUpdate(core, cf)
+    UpdateForChat(core, cf)
+  end
+  if frame.__rothHoverChats then
+    frame.__rothHoverChats[cf] = nil
+  end
 end
 
 local function RegisterDefaultBlizzardFrames(core, cf)
@@ -535,7 +597,6 @@ local function RegisterDefaultBlizzardFrames(core, cf)
   end
 
   local eb = _G[name .. "EditBox"]
-
   local framesToHook = {
     _G[name .. "ButtonFrame"],
     tab,
@@ -546,13 +607,10 @@ local function RegisterDefaultBlizzardFrames(core, cf)
 
   for _, frame in ipairs(framesToHook) do
     if frame then
-      AddUnique(st.frames, frame)
-      HookAccessoryHover(core, cf, frame)
+      RegisterHoverFrame(core, cf, frame)
     end
   end
 
-  -- Хуки фокуса на EditBox: когда игрок нажимает Enter для ввода (даже в бою),
-  -- Controls должен показать UI и не прятать его, пока фокус активен.
   if eb and not eb.__rothFocusHooked then
     eb.__rothFocusHooked = true
     eb:HookScript("OnEditFocusGained", function()
@@ -567,15 +625,6 @@ local function RegisterDefaultBlizzardFrames(core, cf)
   end
 
   RequestHotspotBoundsUpdate(core, cf)
-end
-
-local function RegisterHoverFrame(core, cf, frame)
-  if not cf or not frame then return end
-  local st = GetOrCreateChatState(cf)
-  AddUnique(st.frames, frame)
-  HookAccessoryHover(core, cf, frame)
-  RequestHotspotBoundsUpdate(core, cf)
-  UpdateForChat(core, cf)
 end
 
 local function UpdateHoverState(core, cf)
@@ -593,17 +642,21 @@ local function HookBlizzardFade(core)
   if core.__blizzFadeHooked then return end
   core.__blizzFadeHooked = true
 
-  hooksecurefunc("FCF_FadeInChatFrame", function(cf)
-    if not ControlsEnabled(core) then return end
-    if not core:Get("immersionEnabled") then return end
-    UpdateHoverState(core, cf)
-  end)
+  if type(_G.FCF_FadeInChatFrame) == "function" then
+    hooksecurefunc("FCF_FadeInChatFrame", function(cf)
+      if not ControlsEnabled(core) then return end
+      if not core:Get("immersionEnabled") then return end
+      UpdateHoverState(core, cf)
+    end)
+  end
 
-  hooksecurefunc("FCF_FadeOutChatFrame", function(cf)
-    if not ControlsEnabled(core) then return end
-    if not core:Get("immersionEnabled") then return end
-    UpdateHoverState(core, cf)
-  end)
+  if type(_G.FCF_FadeOutChatFrame) == "function" then
+    hooksecurefunc("FCF_FadeOutChatFrame", function(cf)
+      if not ControlsEnabled(core) then return end
+      if not core:Get("immersionEnabled") then return end
+      UpdateHoverState(core, cf)
+    end)
+  end
 end
 
 local function EnsureChatFrameHandled(core, cf)
@@ -621,6 +674,9 @@ local function RefreshAllChats(core)
     local st = GetOrCreateChatState(cf)
     if not IsInteractableChatFrame(cf) then
       st.hovering = false
+    end
+    if not core:Get("smoothScrollEnabled") then
+      ResetSmoothScroll(cf)
     end
     UpdateForChat(core, cf)
   end
@@ -640,8 +696,8 @@ local function IsNamedChatFrame(frame)
 end
 
 local function RegisterLifecycleListeners(core)
-  if core.__rothControlsLifecycleRegistered then return end
-  core.__rothControlsLifecycleRegistered = true
+  if lifecycleListenersRegistered then return end
+  lifecycleListenersRegistered = true
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame, reason)
     if not ControlsEnabled(core2) then return end
@@ -667,6 +723,7 @@ local function RegisterLifecycleListeners(core)
     local st = state.perChat[chatFrame]
     if st then
       ResetTransientState(st)
+      ResetSmoothScroll(chatFrame)
     end
   end, M)
 
@@ -681,18 +738,20 @@ end
 function M:Init(core)
   self.core = core
   core.RegisterHoverFrame = RegisterHoverFrame
+  core.UnregisterHoverFrame = UnregisterHoverFrame
   core.UpdateHoverState = UpdateHoverState
-  core.GetHotspot = GetHotspot -- Export for CopyOverlay
+  core.GetHotspot = GetHotspot
   return true
 end
 
 function M:OnEnable(core)
   controlsActive = true
+  lifecycleListenersRegistered = false
 
-  -- Register smooth scroll with unified dispatcher (priority 50 = after Restore/Ticker)
   core:RegisterAddMessageHook(OnSmoothScrollAddMessage, self, 50)
 
   local function ApplyAll()
+    if not controlsActive then return end
     core:EnsureChatLifecycleHooks()
     HookBlizzardFade(core)
     RegisterLifecycleListeners(core)
@@ -716,12 +775,18 @@ end
 
 function M:OnDisable(core)
   controlsActive = false
+  lifecycleListenersRegistered = false
   core:UnregisterAddMessageHooks(self)
 
   for cf, st in pairs(state.perChat) do
     ResetTransientState(st)
     st.hovering = false
     st.pinned = false
+
+    ResetSmoothScroll(cf)
+    if cf.__rothOriginalClipsChildren ~= nil and cf.SetClipsChildren then
+      cf:SetClipsChildren(cf.__rothOriginalClipsChildren)
+    end
 
     SetControlsVisible(core, cf, true)
     if st.button and st.button.EnableMouse then
@@ -730,10 +795,16 @@ function M:OnDisable(core)
     end
     if st.hotspot and st.hotspot.EnableMouse then
       st.hotspot:EnableMouse(false)
+      st.hotspot:Hide()
     end
 
     core:Emit("CONTROLS_VISIBILITY", cf, true, false, false)
   end
+end
+
+function M:Refresh(core)
+  if not controlsActive then return end
+  RefreshAllChats(core)
 end
 
 RothChat:RegisterModule(M)
