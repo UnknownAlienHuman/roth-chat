@@ -61,7 +61,7 @@ local function GetTimestampPrefix()
 end
 
 local function AddTimestamp(self, event, msg, ...)
-  if NS.IsSecretValue(msg) then return false end
+  if NS.CanAccessValue and not NS.CanAccessValue(msg) then return false end
   if type(msg) ~= "string" then return false end
 
   -- Skip if a timestamp prefix was already injected.
