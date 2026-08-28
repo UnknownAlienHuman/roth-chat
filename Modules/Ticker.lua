@@ -587,9 +587,7 @@ end
 
 function M:OnEnable(core)
   local function Apply()
-    if core:IsModuleActive("Ticker") or not core._loginComplete then
-      ApplyTickerState(core, true)
-    end
+    ApplyTickerState(core, true)
   end
 
   if InCombatLockdown() then
