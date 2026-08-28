@@ -5,7 +5,7 @@
 ## Version: 1.1.1
 ## SavedVariables: RothChatDB
 ## Category-enUS: Chat
-## Category-ruRU: Chat
+## Category-ruRU: Чат
 
 # Libraries
 ThirdParty\LibStub\LibStub.lua
