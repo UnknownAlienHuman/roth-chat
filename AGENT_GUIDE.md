@@ -19,9 +19,9 @@ Read [`RothChat.toc`](RothChat.toc), then [`Util.lua`](Util.lua) and [`Core.lua`
 
 Modules register with `RothChat:RegisterModule`; each module owns one concern and communicates through core-owned registries. Message transformations use the centralized priority filter registry (`RegisterMessageFilter`) and one consolidated `AddMessage` hook (`RegisterAddMessageHook`).
 
-For Retail 12.1, the shared chat filter accepts and returns the complete 19-argument tuple. Roth Chat callbacks may replace only `arg1`, the visible message text. The remaining routing, sender, line-ID, access-ID, and metadata fields must pass through unchanged.
+For Retail 12.1, the shared chat filter accepts the complete 19-argument tuple. Roth Chat callbacks may replace only `arg1`, the visible message text. A no-op callback path returns only `false`, allowing Blizzard to retain its current secure tuple. When `arg1` actually changes, the dispatcher returns all 19 fields and preserves every routing, sender, line-ID, access-ID, and metadata value unchanged. A discard path returns only `true`.
 
-The post-`AddMessage` boundary is render-facing: it accepts only accessible string text, normalizes inaccessible color values to `nil`, and deliberately does not forward trailing opaque metadata to addon modules.
+The post-`AddMessage` boundary is render-facing: it accepts only accessible string text, normalizes colors to accessible numbers or `nil`, and deliberately does not forward trailing opaque metadata to addon modules.
 
 ## State and dependencies
 
@@ -34,6 +34,7 @@ The only declared SavedVariables root is `RothChatDB`; `Core.lua` owns `RothChat
 - Treat `canaccessvalue` and `canaccessallvalues` as operation gates. `issecretvalue` is provenance information, not permission to use a value.
 - Gate before nil/type checks, truth tests, comparisons, arithmetic, formatting, concatenation, length, table key/index use, iteration, logging, persistence, API forwarding, or timer/closure capture.
 - If any incoming 19-field filter tuple value is inaccessible, skip Roth Chat filtering and let Blizzard continue with the untouched payload.
+- Return only `false` when text is unchanged. A truthy second callback return activates Blizzard tuple replacement; therefore a real text replacement must include all 19 fields.
 - Never retain raw event/filter tuples or trailing `AddMessage` metadata. Only access-normalized render text and ordinary primitives may enter module state.
 - Keep `Modules/History.lua` disabled unless intentionally replacing Restore; enabling both duplicates persistence and filtering.
 - `Util.lua` has two demand-driven `OnUpdate` drivers (scheduler and fader). They must be active only while work exists; do not add permanent per-frame scans.
@@ -58,7 +59,7 @@ Static checks:
 2. Parse every changed Lua file with a compatible Lua parser where available.
 3. Confirm each enabled module calls `RothChat:RegisterModule`.
 4. Inspect the branch diff for accidental global replacement, raw payload retention, whitespace errors, or unrelated edits.
-5. Confirm every filter path preserves all 19 arguments and only replaces `arg1`.
+5. Confirm no-op filter paths return only `false`; transformed paths return all 19 arguments and replace only `arg1`.
 
 Live-client checks:
 
