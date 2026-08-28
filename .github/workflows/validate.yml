@@ -37,6 +37,9 @@ jobs:
       - name: Verify module lifecycle contract
         run: lua5.4 tests/core_module_lifecycle_spec.lua
 
+      - name: Verify URL transformation contract
+        run: lua5.4 tests/url_copy_spec.lua
+
       - name: Verify TOC metadata and load paths
         run: |
           grep -Fxq '## Interface: 120100' RothChat.toc
