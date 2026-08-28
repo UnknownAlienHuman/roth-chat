@@ -49,6 +49,15 @@ local function NotifyChatRestriction(core)
   end
 end
 
+local function DetachBar(core)
+  if not bar then return end
+  local attached = bar.__rothAttachedChatFrame
+  if attached and type(core.UnregisterHoverFrame) == "function" then
+    core:UnregisterHoverFrame(attached, bar)
+  end
+  bar.__rothAttachedChatFrame = nil
+end
+
 local function SkinButton(b, core)
   local fs = b.__fs
   if not fs then return end
@@ -76,7 +85,6 @@ local function CreateBar(core, cf)
   bar = CreateFrame("Frame", nil, UIParent)
   bar:SetFrameStrata("MEDIUM")
   bar:SetFrameLevel((cf and cf:GetFrameLevel() or 1) + 10)
-
   bar.buttons = {}
 
   for i, info in ipairs(BUTTONS) do
@@ -122,10 +130,6 @@ local function CreateBar(core, cf)
     bar.buttons[i] = b
   end
 
-  if type(core.RegisterHoverFrame) == "function" then
-    core:RegisterHoverFrame(cf, bar)
-  end
-
   return bar
 end
 
@@ -136,10 +140,14 @@ local function LayoutBar(core)
   local anchor = core:Get("chatBarAnchor") or "LEFT"
   local cf = GetTargetChatFrame(core)
   if not cf then return end
+
+  local previous = bar.__rothAttachedChatFrame
+  if previous and previous ~= cf and type(core.UnregisterHoverFrame) == "function" then
+    core:UnregisterHoverFrame(previous, bar)
+  end
+
   bar:SetFrameLevel(cf:GetFrameLevel() + 10)
-
-  local padding = 6  -- Extra padding on each side to widen bar
-
+  local padding = 6
   bar:ClearAllPoints()
 
   if anchor == "RIGHT" then
@@ -160,7 +168,6 @@ local function LayoutBar(core)
     b:ClearAllPoints()
 
     if i == 1 then
-      -- Offset from top-left by padding to center buttons in bar
       b:SetPoint("TOPLEFT", bar, "TOPLEFT", padding, -padding)
     else
       local prev = bar.buttons[i - 1]
@@ -180,11 +187,13 @@ local function LayoutBar(core)
     end
   end
 
-  -- Add padding on both sides
   bar:SetSize(totalW + padding * 2, totalH + padding * 2)
 
   if type(core.RegisterHoverFrame) == "function" then
     core:RegisterHoverFrame(cf, bar)
+    bar.__rothAttachedChatFrame = cf
+  else
+    bar.__rothAttachedChatFrame = nil
   end
 end
 
@@ -195,6 +204,7 @@ end
 
 ApplyBar = function(core)
   if not core:Get("chatBarEnabled") then
+    DetachBar(core)
     if bar then bar:Hide() end
     return
   end
@@ -224,11 +234,16 @@ local function RegisterLifecycleListeners(core)
 end
 
 function M:OnEnable(core)
+  listenersRegistered = false
   core:EnsureChatLifecycleHooks()
   RegisterLifecycleListeners(core)
 
   if InCombatLockdown() then
-    core:Defer(ApplyBar, core)
+    core:Defer(function()
+      if core:IsModuleActive("ChatBar") then
+        ApplyBar(core)
+      end
+    end)
   else
     ApplyBar(core)
   end
@@ -239,9 +254,7 @@ function M:OnLogin(core)
 end
 
 function M:OnDisable(core)
-  if core and core.OffOwner then
-    core:OffOwner(self)
-  end
+  DetachBar(core)
   listenersRegistered = false
   if bar then bar:Hide() end
 end
