@@ -12,9 +12,9 @@ Modular immersive Diablo-style chat UI for World of Warcraft Retail / Midnight. 
 
 ## Retail 12.1 migration
 
-Version 1.1.0 updates the chat integration for Blizzard's current 19-argument message-filter contract. The shared dispatcher preserves the complete tuple, limits Roth Chat transformations to the visible message text, and skips addon processing when the payload is not accessible.
+Version 1.1.0 updates the chat integration for Blizzard's current 19-argument message-filter contract. Roth Chat transforms only the visible message text. No-op paths return only `false`, leaving Blizzard's current secure tuple in place; a real text change returns the replacement text together with all remaining 18 fields unchanged.
 
-Secret-capable values are gated with `canaccessvalue` / `canaccessallvalues` before inspection, comparison, formatting, table use, or persistence. The render-facing `AddMessage` integration forwards only accessible text and color primitives to Roth Chat modules and does not retain trailing opaque metadata.
+Secret-capable values are gated with `canaccessvalue` / `canaccessallvalues` before inspection, comparison, formatting, table use, or persistence. The render-facing `AddMessage` integration forwards only accessible text and numeric color primitives to Roth Chat modules and does not retain trailing opaque metadata.
 
 Profile migration is additive: upgrading the addon no longer re-enables modules or features that the user explicitly disabled.
 
