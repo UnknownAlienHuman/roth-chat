@@ -1,11 +1,5 @@
 -- RothChat - Style module
--- Responsibilities:
---   * Chat font + text shadow tuning
---   * Optional "glass" background behind chat windows
---   * EditBox skinning & positioning (ls_Glass style)
---   * ScrollToBottom button skinning (scroll-buttons.TGA atlas)
---   * Chat tab skinning (backdrop + border-highlight)
---   * ButtonFrame chrome removal (per-texture, like ls_Glass)
+-- Chat typography and Roth/Glass presentation for Blizzard chat frames.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -16,32 +10,18 @@ local M = {
   description = "Fonts, shadows, and ls_Glass visual style.",
 }
 
-local backgrounds = {} -- [chatFrame] = bgFrame
-local QueueApplyAll -- forward
+local backgrounds = {}
+local styleActive = false
+local listenersRegistered = false
+local QueueApplyAll
+
 local DEFAULT_BG_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local DEFAULT_BORDER_TEXTURE = NS.BORDER_TEXTURE or "Interface\\AddOns\\RothChat\\Assets\\border"
 local DEFAULT_EDIT_CURSOR_BLINK = 0.85
+local EDIT_ALPHA_IDLE = 0.0
+local EDIT_ALPHA_FOCUS = 0.22
+local EDIT_ALPHA_TEXT = 0.32
 
-local function ParseHexColor(hex, defaultR, defaultG, defaultB)
-  if type(hex) ~= "string" then
-    return defaultR, defaultG, defaultB
-  end
-  local clean = hex:gsub("^#", ""):gsub("^|c%x%x", ""):sub(1, 6)
-  if #clean ~= 6 then
-    return defaultR, defaultG, defaultB
-  end
-  local r = tonumber(clean:sub(1, 2), 16)
-  local g = tonumber(clean:sub(3, 4), 16)
-  local b = tonumber(clean:sub(5, 6), 16)
-  if not r or not g or not b then
-    return defaultR, defaultG, defaultB
-  end
-  return r / 255, g / 255, b / 255
-end
-
--- ============================================================================
--- BUTTON FRAME CHROME: all 9 textures like ls_Glass
--- ============================================================================
 local BUTTON_FRAME_TEXTURES = {
   "Background",
   "TopLeftTexture",
@@ -54,44 +34,67 @@ local BUTTON_FRAME_TEXTURES = {
   "RightTexture",
 }
 
-local function StripButtonFrame(cf)
-  local chatName = cf:GetName()
-  if not chatName then return end
-  local btnFrame = _G[chatName .. "ButtonFrame"]
-  if not btnFrame then return end
-
-  -- Zero out textures instead of hiding the frame entirely
-  for _, texName in ipairs(BUTTON_FRAME_TEXTURES) do
-    local obj = _G[btnFrame:GetName() .. texName]
-    if obj and obj.SetTexture then
-      obj:SetTexture(0)
-    end
-  end
-  -- Increased width slightly to ensure scroll buttons aren't clipped
-  -- and provide a bit more breathing room on the right edge.
-  btnFrame:SetWidth(28)
-end
-
--- ============================================================================
--- EDIT BOX: hide Blizz textures, backdrop with border.TGA
--- ============================================================================
 local EDIT_BOX_TEXTURES = {
   "Left", "Mid", "Right",
   "FocusLeft", "FocusMid", "FocusRight",
 }
 
+local function IsEnabled(core)
+  return styleActive
+    and core
+    and core:IsModuleActive("Style")
+    and core:Get("styleEnabled") ~= false
+end
 
--- EditBox backdrop behavior (ls_Glass-inspired):
---   * no placeholder/underlay when idle
---   * slight darkening when focused
---   * slightly stronger darkening while typing
-local EDIT_ALPHA_IDLE  = 0.0
-local EDIT_ALPHA_FOCUS = 0.22
-local EDIT_ALPHA_TEXT  = 0.32
+local function ParseHexColor(hex, defaultR, defaultG, defaultB)
+  if type(hex) ~= "string" then
+    return defaultR, defaultG, defaultB
+  end
+
+  local clean = hex:gsub("^#", ""):gsub("^|c%x%x", ""):sub(1, 6)
+  if #clean ~= 6 then
+    return defaultR, defaultG, defaultB
+  end
+
+  local r = tonumber(clean:sub(1, 2), 16)
+  local g = tonumber(clean:sub(3, 4), 16)
+  local b = tonumber(clean:sub(5, 6), 16)
+  if not r or not g or not b then
+    return defaultR, defaultG, defaultB
+  end
+
+  return r / 255, g / 255, b / 255
+end
+
+local function GetConfiguredFont(core)
+  local font = core:Get("styleFont")
+  if type(font) == "string" and font ~= "" then
+    return font
+  end
+
+  local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+  return (LSM and LSM:Fetch("font", "Friz Quadrata TT")) or "Fonts\\FRIZQT__.TTF"
+end
+
+local function StripButtonFrame(cf)
+  local chatName = cf and cf:GetName()
+  if not chatName then return end
+  local btnFrame = _G[chatName .. "ButtonFrame"]
+  if not btnFrame then return end
+
+  for _, texName in ipairs(BUTTON_FRAME_TEXTURES) do
+    local obj = _G[btnFrame:GetName() .. texName]
+    if obj and obj.SetTexture then
+      obj:SetTexture(nil)
+    end
+  end
+
+  btnFrame:SetWidth(28)
+end
 
 local function SetEditBoxGlassAlpha(eb, alpha)
   if not eb then return end
-  alpha = alpha or 0
+  alpha = tonumber(alpha) or 0
   if eb.__rothEditAlpha == alpha then return end
   eb.__rothEditAlpha = alpha
   NS.ApplyGlassLook(eb, alpha)
@@ -100,32 +103,37 @@ end
 
 local function KillEditBoxUnderlayTextures(eb)
   if not eb or not eb.GetNumRegions then return end
+
   for i = 1, eb:GetNumRegions() do
     local region = select(i, eb:GetRegions())
-    if region and region.GetObjectType and region:GetObjectType() == 'Texture' then
-      if region ~= eb.glassLeft and region ~= eb.glassCenter and region ~= eb.glassRight and region ~= eb.glassSolid and region ~= eb.glassBorder then
-        if region.SetTexture then region:SetTexture(0) end
+    if region and region.GetObjectType and region:GetObjectType() == "Texture" then
+      local isRothTexture = region == eb.glassLeft
+        or region == eb.glassCenter
+        or region == eb.glassRight
+        or region == eb.glassSolid
+        or region == eb.glassBorder
+
+      if not isRothTexture then
+        if region.SetTexture then region:SetTexture(nil) end
         if region.SetAlpha then region:SetAlpha(0) end
         if region.Hide then region:Hide() end
       end
     end
   end
 
-  -- Some builds expose extra named textures on the editbox itself.
   local name = eb.GetName and eb:GetName()
   if name then
-    local suffixes = {"Background", "Bg", "Backdrop", "Border"}
+    local suffixes = { "Background", "Bg", "Backdrop", "Border" }
     for i = 1, #suffixes do
-      local t = _G[name .. suffixes[i]]
-      if t and t.SetTexture then
-        t:SetTexture(0)
-        if t.SetAlpha then t:SetAlpha(0) end
-        if t.Hide then t:Hide() end
+      local texture = _G[name .. suffixes[i]]
+      if texture and texture.SetTexture then
+        texture:SetTexture(nil)
+        if texture.SetAlpha then texture:SetAlpha(0) end
+        if texture.Hide then texture:Hide() end
       end
     end
   end
 
-  -- Clear any backdrop Blizzard may have set on the editbox
   if eb.SetBackdrop then eb:SetBackdrop(nil) end
 end
 
@@ -135,101 +143,22 @@ local function RefreshEditBoxInsets(eb)
   end
 
   local left, right, top, bottom = eb:GetTextInsets()
-  left = math.max(8, tonumber(left) or 0)
-  right = math.max(8, tonumber(right) or 0)
-  top = math.max(4, tonumber(top) or 0)
-  bottom = math.max(4, tonumber(bottom) or 0)
-  eb:SetTextInsets(left, right, top, bottom)
+  eb:SetTextInsets(
+    math.max(8, tonumber(left) or 0),
+    math.max(8, tonumber(right) or 0),
+    math.max(4, tonumber(top) or 0),
+    math.max(4, tonumber(bottom) or 0)
+  )
 end
 
-local function SkinEditBox(core, cf)
-  local name = cf:GetName()
-  if not name then return end
-  local eb = _G[name.."EditBox"]
-  if not eb then return end
+local function PositionEditBox(core, cf, eb)
+  if not cf or not eb or eb.__rothPositioning then return end
+  eb.__rothPositioning = true
 
-  -- Hide ALL Blizz editbox textures by name (like ls_Glass)
-  for _, texName in ipairs(EDIT_BOX_TEXTURES) do
-    local tex = _G[name .. "EditBox" .. texName] or _G[eb:GetName() .. texName]
-    if tex then
-      tex:SetTexture(0)
-      tex:SetAlpha(0)
-      tex:Hide()
-    end
-  end
-
-  -- Also catch any remaining ChatFrameEditBox / UI-ChatInputBorder textures
-  for i = 1, eb:GetNumRegions() do
-    local region = select(i, eb:GetRegions())
-    if region and region:GetObjectType() == "Texture" then
-      local tex = region:GetTexture()
-      if tex and (type(tex) == "string") and (tex:find("ChatFrameEditBox") or tex:find("UI%-ChatInputBorder")) then
-        region:SetTexture(0)
-        region:SetAlpha(0)
-        region:Hide()
-      end
-    end
-  end
-
-  -- Clear any backdrop set by Blizzard on the editbox itself
-  if eb.SetBackdrop then eb:SetBackdrop(nil) end
-
-
-  -- Apply glass background only when focused/typing (no fake placeholder when idle)
-  if not eb.__glassStyled then
-    eb.__glassStyled = true
-    SetEditBoxGlassAlpha(eb, EDIT_ALPHA_IDLE)
-
-    if not eb.__rothEditHooks then
-      eb.__rothEditHooks = true
-      eb:HookScript('OnEditFocusGained', function(self)
-        -- Re-suppress Blizzard textures that may reappear on focus
-        KillEditBoxUnderlayTextures(self)
-        local a = (self:GetText() and self:GetText() ~= '') and EDIT_ALPHA_TEXT or EDIT_ALPHA_FOCUS
-        SetEditBoxGlassAlpha(self, a)
-      end)
-      eb:HookScript('OnEditFocusLost', function(self)
-        SetEditBoxGlassAlpha(self, EDIT_ALPHA_IDLE)
-      end)
-      eb:HookScript('OnTextChanged', function(self, userInput)
-        if not userInput then return end
-        if not self:HasFocus() then return end
-        local a = (self:GetText() and self:GetText() ~= '') and EDIT_ALPHA_TEXT or EDIT_ALPHA_FOCUS
-        SetEditBoxGlassAlpha(self, a)
-      end)
-
-      if type(eb.UpdateHeader) == "function" then
-        hooksecurefunc(eb, "UpdateHeader", RefreshEditBoxInsets)
-      end
-    end
-  end
-
-  -- Ensure any remaining Blizzard underlay textures are removed.
-  KillEditBoxUnderlayTextures(eb)
-
-  -- Font
-  local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-  local font = core:Get("styleFont") or (LSM and LSM:Fetch("font", "Friz Quadrata TT")) or "Fonts\\FRIZQT__.TTF"
-  local size = core:Get("styleFontSize") or 12
-  eb:SetFont(font, size, "")
-  eb:SetTextColor(0.95, 0.95, 0.95, 1)
-  if core:Get("styleShadow") then
-    eb:SetShadowColor(0, 0, 0, 0.75)
-    eb:SetShadowOffset(1, -1)
-  else
-    eb:SetShadowColor(0, 0, 0, 0)
-    eb:SetShadowOffset(0, 0)
-  end
-  if type(eb.SetBlinkSpeed) == "function" then
-    eb:SetBlinkSpeed(DEFAULT_EDIT_CURSOR_BLINK)
-  end
-
-  -- Positioning
-  local pos = core:Get("editBoxPosition") or "BOTTOM"
   eb:ClearAllPoints()
   eb:SetHeight(24)
 
-  if pos == "TOP" then
+  if (core:Get("editBoxPosition") or "BOTTOM") == "TOP" then
     eb:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, 24)
     eb:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 0, 24)
   else
@@ -237,41 +166,111 @@ local function SkinEditBox(core, cf)
     eb:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 0, -24)
   end
 
-  if type(eb.UpdateHeader) == "function" then
-    eb:UpdateHeader()
+  eb.__rothPositioning = nil
+end
+
+local function SkinEditBox(core, cf)
+  local name = cf and cf:GetName()
+  if not name then return end
+  local eb = _G[name .. "EditBox"]
+  if not eb then return end
+
+  for _, texName in ipairs(EDIT_BOX_TEXTURES) do
+    local texture = _G[name .. "EditBox" .. texName] or _G[eb:GetName() .. texName]
+    if texture then
+      texture:SetTexture(nil)
+      texture:SetAlpha(0)
+      texture:Hide()
+    end
   end
+
+  for i = 1, eb:GetNumRegions() do
+    local region = select(i, eb:GetRegions())
+    if region and region.GetObjectType and region:GetObjectType() == "Texture" then
+      local texture = region:GetTexture()
+      if type(texture) == "string" and (texture:find("ChatFrameEditBox") or texture:find("UI%-ChatInputBorder")) then
+        region:SetTexture(nil)
+        region:SetAlpha(0)
+        region:Hide()
+      end
+    end
+  end
+
+  KillEditBoxUnderlayTextures(eb)
+
+  if not eb.__rothEditHooks then
+    eb.__rothEditHooks = true
+
+    eb:HookScript("OnEditFocusGained", function(self)
+      if not IsEnabled(core) then return end
+      KillEditBoxUnderlayTextures(self)
+      local text = self:GetText()
+      SetEditBoxGlassAlpha(self, text and text ~= "" and EDIT_ALPHA_TEXT or EDIT_ALPHA_FOCUS)
+    end)
+
+    eb:HookScript("OnEditFocusLost", function(self)
+      if not styleActive then return end
+      SetEditBoxGlassAlpha(self, EDIT_ALPHA_IDLE)
+    end)
+
+    eb:HookScript("OnTextChanged", function(self, userInput)
+      if not userInput or not IsEnabled(core) or not self:HasFocus() then return end
+      local text = self:GetText()
+      SetEditBoxGlassAlpha(self, text and text ~= "" and EDIT_ALPHA_TEXT or EDIT_ALPHA_FOCUS)
+    end)
+
+    if type(eb.UpdateHeader) == "function" then
+      hooksecurefunc(eb, "UpdateHeader", function(self)
+        if not IsEnabled(core) then return end
+        RefreshEditBoxInsets(self)
+      end)
+    end
+  end
+
+  if not eb.__glassStyled then
+    eb.__glassStyled = true
+    SetEditBoxGlassAlpha(eb, EDIT_ALPHA_IDLE)
+  end
+
+  local size = tonumber(core:Get("styleFontSize")) or 12
+  eb:SetFont(GetConfiguredFont(core), size, "")
+  eb:SetTextColor(0.95, 0.95, 0.95, 1)
+
+  if core:Get("styleShadow") then
+    eb:SetShadowColor(0, 0, 0, 0.75)
+    eb:SetShadowOffset(1, -1)
+  else
+    eb:SetShadowColor(0, 0, 0, 0)
+    eb:SetShadowOffset(0, 0)
+  end
+
+  if type(eb.SetBlinkSpeed) == "function" then
+    eb:SetBlinkSpeed(DEFAULT_EDIT_CURSOR_BLINK)
+  end
+
+  PositionEditBox(core, cf, eb)
+  if type(eb.UpdateHeader) == "function" then eb:UpdateHeader() end
   RefreshEditBoxInsets(eb)
 end
 
--- ============================================================================
--- SCROLL TO BOTTOM BUTTON: atlas from scroll-buttons.TGA
--- ============================================================================
 local function SkinScrollButton(core, cf)
-  local btn = cf.ScrollToBottomButton
+  local btn = cf and cf.ScrollToBottomButton
   if not btn then return end
 
   if not btn.__rothSkinned then
     btn.__rothSkinned = true
-
-    -- Kill all Blizz textures
-    btn:SetNormalTexture(0)
-    btn:SetPushedTexture(0)
-    if btn.SetDisabledTexture then btn:SetDisabledTexture(0) end
-    btn:SetHighlightTexture(0)
+    btn:SetNormalTexture(nil)
+    btn:SetPushedTexture(nil)
+    if btn.SetDisabledTexture then btn:SetDisabledTexture(nil) end
+    btn:SetHighlightTexture(nil)
     if btn.Flash then btn.Flash:SetAlpha(0) end
 
-    -- Size: 24x24 like ls_Glass
     btn:SetSize(24, 24)
-
-    -- Anchor slightly inside the frame to prevent clipping by SetClipsChildren(true)
-    -- and align with the restyled ButtonFrame chrome.
     btn:ClearAllPoints()
     btn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -2, 2)
 
-    -- Backdrop with border.TGA
     NS.ApplyGlassBackdrop(btn, 0.8, 0, 0)
 
-    -- Icon from scroll-buttons atlas
     local icon = btn:CreateTexture(nil, "OVERLAY")
     icon:SetSize(16, 16)
     icon:SetPoint("CENTER")
@@ -280,203 +279,166 @@ local function SkinScrollButton(core, cf)
     icon:SetTexCoord(tc[1], tc[2], tc[3], tc[4])
     btn.__scrollIcon = icon
 
-    -- 3-part highlight
     NS.CreateHighlight(btn, "HIGHLIGHT", nil, nil, nil, 0)
 
-    -- Hover alpha
-    btn:HookScript("OnEnter", function()
-      if btn.__glassBackdrop then
-        btn.__glassBackdrop:SetBackdropColor(0, 0, 0, 1)
-        btn.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 1)
+    btn:HookScript("OnEnter", function(self)
+      if not IsEnabled(core) then return end
+      if self.__glassBackdrop then
+        self.__glassBackdrop:SetBackdropColor(0, 0, 0, 1)
+        self.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 1)
       end
     end)
-    btn:HookScript("OnLeave", function()
-      if btn.__glassBackdrop then
-        btn.__glassBackdrop:SetBackdropColor(0, 0, 0, 0.8)
-        btn.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 0.8)
+
+    btn:HookScript("OnLeave", function(self)
+      if not styleActive then return end
+      if self.__glassBackdrop then
+        self.__glassBackdrop:SetBackdropColor(0, 0, 0, 0.8)
+        self.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 0.8)
       end
     end)
   end
 end
 
--- ============================================================================
--- CHAT TABS: backdrop + 3-part border-highlight
--- ============================================================================
--- CHAT TABS: strip Blizz chrome, restyle highlight/active, enforce 20px
--- ============================================================================
+local function SetTabHeight(tab)
+  if not tab or tab.__rothFixingHeight then return end
+  tab.__rothFixingHeight = true
+  tab:SetHeight(20)
+  tab.__rothFixingHeight = nil
+end
+
+local function CenterTabText(core, tab, text)
+  if not text or text.__rothFixingPoint then return end
+  text.__rothFixingPoint = true
+  text:ClearAllPoints()
+  text:SetPoint("CENTER", tab, "CENTER", 0, 0)
+  text.__rothFixingPoint = nil
+end
+
+local function SkinTabTriplet(left, middle, right, tab)
+  if left then
+    left:ClearAllPoints()
+    left:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, -2)
+    left:SetTexture(NS.BORDER_HL_TEXTURE)
+    left:SetTexCoord(0, 1, 0.5, 1)
+    left:SetSize(8, 8)
+  end
+
+  if right then
+    right:ClearAllPoints()
+    right:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, -2)
+    right:SetTexture(NS.BORDER_HL_TEXTURE)
+    right:SetTexCoord(1, 0, 0.5, 1)
+    right:SetSize(8, 8)
+  end
+
+  if middle and left and right then
+    middle:ClearAllPoints()
+    middle:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
+    middle:SetPoint("TOPRIGHT", right, "TOPLEFT", 0, 0)
+    middle:SetTexture(NS.BORDER_HL_TEXTURE)
+    middle:SetTexCoord(0, 1, 0, 0.5)
+    middle:SetSize(8, 8)
+  end
+end
+
 local function SkinChatTab(core, cf)
-  local chatName = cf:GetName()
+  local chatName = cf and cf:GetName()
   if not chatName then return end
   local tab = _G[chatName .. "Tab"]
-  if not tab or tab.__rothTabSkinned then return end
-  tab.__rothTabSkinned = true
+  if not tab then return end
 
-  -- Nuke ALL background textures on the tab by iterating all regions.
-  -- This catches Left/Middle/Right, atlas textures, and any version-specific textures.
-  local regions = { tab:GetRegions() }
-  local text = tab.Text or tab:GetFontString()
-  for _, region in ipairs(regions) do
-    if region:IsObjectType("Texture") then
-      local drawLayer = region:GetDrawLayer()
-      -- Hide background/border textures but preserve OVERLAY (glow, highlight)
-      if drawLayer == "BACKGROUND" or drawLayer == "BORDER" or drawLayer == "ARTWORK" then
-        -- Don't hide the active/highlight textures we want to restyle
-        if region ~= tab.ActiveLeft and region ~= tab.ActiveMiddle and region ~= tab.ActiveRight
-          and region ~= tab.HighlightLeft and region ~= tab.HighlightMiddle and region ~= tab.HighlightRight
-          and region ~= tab.glow then
-          region:SetTexture(0)
-          region:SetAtlas("")
+  if not tab.__rothTabSkinned then
+    tab.__rothTabSkinned = true
+    local text = tab.Text or tab:GetFontString()
+
+    for _, region in ipairs({ tab:GetRegions() }) do
+      if region and region.IsObjectType and region:IsObjectType("Texture") then
+        local drawLayer = region:GetDrawLayer()
+        local keep = region == tab.ActiveLeft
+          or region == tab.ActiveMiddle
+          or region == tab.ActiveRight
+          or region == tab.HighlightLeft
+          or region == tab.HighlightMiddle
+          or region == tab.HighlightRight
+          or region == tab.glow
+          or region == tab.conversationIcon
+
+        if not keep and (drawLayer == "BACKGROUND" or drawLayer == "BORDER" or drawLayer == "ARTWORK") then
+          region:SetTexture(nil)
           region:SetSize(0.001, 0.001)
           region:Hide()
         end
       end
     end
-  end
 
-  -- Compact height: 20px
-  tab:SetHeight(20)
+    hooksecurefunc(tab, "SetHeight", function(self, height)
+      if not IsEnabled(core) or self.__rothFixingHeight then return end
+      if tonumber(height) ~= 20 then SetTabHeight(self) end
+    end)
 
-  -- Hooks to prevent Blizzard from resizing
-  hooksecurefunc(tab, "SetHeight", function(self, h)
-    if self.__rothFixingHeight then return end
-    if h ~= 20 then
-      self.__rothFixingHeight = true
-      self:SetHeight(20)
-      self.__rothFixingHeight = nil
-    end
-  end)
-  hooksecurefunc(tab, "SetSize", function(self, w, h)
-    if self.__rothFixingHeight then return end
-    if h ~= 20 then
-      self.__rothFixingHeight = true
-      self:SetSize(w, 20)
-      self.__rothFixingHeight = nil
-    end
-  end)
-
-  -- Reposition text: centered vertically in 20px
-  if text then
-    hooksecurefunc(text, "SetPoint", function(self, p, anchor, rP, x, y, shouldIgnore)
-      if not shouldIgnore then
-        self:SetPoint(p, anchor, rP, p == "LEFT" and 8 or x, p == "CENTER" and 0 or y, true)
+    hooksecurefunc(tab, "SetSize", function(self, width, height)
+      if not IsEnabled(core) or self.__rothFixingHeight then return end
+      if tonumber(height) ~= 20 then
+        self.__rothFixingHeight = true
+        self:SetSize(width, 20)
+        self.__rothFixingHeight = nil
       end
     end)
-    text:SetShadowColor(0, 0, 0, 0.8)
-    text:SetShadowOffset(1, -1)
-  end
 
-  -- Hide duplicate decorative FontStrings (e.g. Blizzard adds extra labels on some
-  -- tab templates). Keep ANY FontString that carries actual text — only hide truly
-  -- empty/whitespace ones that are not the primary label.
-  do
-    local keep = text or (tab.GetFontString and tab:GetFontString())
-    local regs = { tab:GetRegions() }
-    for _, r in ipairs(regs) do
-      if r and r.IsObjectType and r:IsObjectType("FontString") and r ~= keep then
-        local t = r.GetText and r:GetText()
-        if not t or strtrim(t) == "" then
-          r:Hide()
-        end
+    if text then
+      hooksecurefunc(text, "SetPoint", function(self)
+        if not IsEnabled(core) or self.__rothFixingPoint then return end
+        CenterTabText(core, tab, self)
+      end)
+      text:SetShadowColor(0, 0, 0, 0.8)
+      text:SetShadowOffset(1, -1)
+      CenterTabText(core, tab, text)
+    end
+
+    local keepText = text or (tab.GetFontString and tab:GetFontString())
+    for _, region in ipairs({ tab:GetRegions() }) do
+      if region and region.IsObjectType and region:IsObjectType("FontString") and region ~= keepText then
+        local value = region.GetText and region:GetText()
+        if not value or strtrim(value) == "" then region:Hide() end
       end
     end
+
+    if tab.glow then
+      tab.glow:ClearAllPoints()
+      tab.glow:SetPoint("BOTTOMLEFT", 8, 2)
+      tab.glow:SetPoint("BOTTOMRIGHT", -8, 2)
+    end
+
+    SkinTabTriplet(tab.HighlightLeft, tab.HighlightMiddle, tab.HighlightRight, tab)
+    SkinTabTriplet(tab.ActiveLeft, tab.ActiveMiddle, tab.ActiveRight, tab)
   end
 
-  -- Reposition glow (unread indicator)
-  if tab.glow then
-    tab.glow:ClearAllPoints()
-    tab.glow:SetPoint("BOTTOMLEFT", 8, 2)
-    tab.glow:SetPoint("BOTTOMRIGHT", -8, 2)
-  end
-
-  -- Restyle Highlight textures (mouseover effect)
-  if tab.HighlightLeft then
-    tab.HighlightLeft:ClearAllPoints()
-    tab.HighlightLeft:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, -2)
-    tab.HighlightLeft:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.HighlightLeft:SetTexCoord(0, 1, 0.5, 1)
-    tab.HighlightLeft:SetSize(8, 8)
-    tab.HighlightLeft:Show()
-  end
-  if tab.HighlightRight then
-    tab.HighlightRight:ClearAllPoints()
-    tab.HighlightRight:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, -2)
-    tab.HighlightRight:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.HighlightRight:SetTexCoord(1, 0, 0.5, 1)
-    tab.HighlightRight:SetSize(8, 8)
-    tab.HighlightRight:Show()
-  end
-  if tab.HighlightMiddle then
-    tab.HighlightMiddle:ClearAllPoints()
-    tab.HighlightMiddle:SetPoint("TOPLEFT", tab.HighlightLeft, "TOPRIGHT", 0, 0)
-    tab.HighlightMiddle:SetPoint("TOPRIGHT", tab.HighlightRight, "TOPLEFT", 0, 0)
-    tab.HighlightMiddle:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.HighlightMiddle:SetTexCoord(0, 1, 0, 0.5)
-    tab.HighlightMiddle:SetSize(8, 8)
-    tab.HighlightMiddle:Show()
-  end
-
-  -- Restyle Active textures (selected tab indicator)
-  if tab.ActiveLeft then
-    tab.ActiveLeft:ClearAllPoints()
-    tab.ActiveLeft:SetPoint("TOPLEFT", tab, "TOPLEFT", 0, -2)
-    tab.ActiveLeft:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.ActiveLeft:SetTexCoord(0, 1, 0.5, 1)
-    tab.ActiveLeft:SetSize(8, 8)
-    tab.ActiveLeft:Show()
-  end
-  if tab.ActiveRight then
-    tab.ActiveRight:ClearAllPoints()
-    tab.ActiveRight:SetPoint("TOPRIGHT", tab, "TOPRIGHT", 0, -2)
-    tab.ActiveRight:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.ActiveRight:SetTexCoord(1, 0, 0.5, 1)
-    tab.ActiveRight:SetSize(8, 8)
-    tab.ActiveRight:Show()
-  end
-  if tab.ActiveMiddle then
-    tab.ActiveMiddle:ClearAllPoints()
-    tab.ActiveMiddle:SetPoint("TOPLEFT", tab.ActiveLeft, "TOPRIGHT", 0, 0)
-    tab.ActiveMiddle:SetPoint("TOPRIGHT", tab.ActiveRight, "TOPLEFT", 0, 0)
-    tab.ActiveMiddle:SetTexture(NS.BORDER_HL_TEXTURE)
-    tab.ActiveMiddle:SetTexCoord(0, 1, 0, 0.5)
-    tab.ActiveMiddle:SetSize(8, 8)
-    tab.ActiveMiddle:Show()
-  end
-
-  -- Reset text position to trigger hooks
-  if text and text.GetPoint and pcall(text.GetPoint, text, 1) then
-    text:SetPoint(text:GetPoint(1))
-  end
+  SetTabHeight(tab)
 end
 
--- ============================================================================
--- SOCIAL/SYSTEM BUTTONS: QuickJoinToast, ChannelButton, MenuButton
--- ============================================================================
-local function SkinOneSocialButton(btn, skipNormal)
+local function SkinOneSocialButton(core, btn, skipNormal)
   if not btn or btn.__rothSocialSkinned then return end
   btn.__rothSocialSkinned = true
 
-  -- Only strip the chrome textures, NOT the icon
-  -- skipNormal=true for buttons whose icon IS the normal texture (e.g. MenuButton)
-  if not skipNormal and btn.SetNormalTexture then btn:SetNormalTexture(0) end
-  if btn.SetPushedTexture then btn:SetPushedTexture(0) end
-  if btn.SetHighlightTexture then btn:SetHighlightTexture(0) end
-  if btn.SetDisabledTexture then pcall(btn.SetDisabledTexture, btn, 0) end
+  if not skipNormal and btn.SetNormalTexture then btn:SetNormalTexture(nil) end
+  if btn.SetPushedTexture then btn:SetPushedTexture(nil) end
+  if btn.SetHighlightTexture then btn:SetHighlightTexture(nil) end
+  if btn.SetDisabledTexture then pcall(btn.SetDisabledTexture, btn, nil) end
 
-  -- Compact size
   btn:SetSize(24, 24)
-
-  -- Glass backdrop + highlight
   NS.ApplyGlassBackdrop(btn, 0.4, 0, 0)
   NS.CreateHighlight(btn, "HIGHLIGHT", nil, nil, nil, 0)
 
-  -- Hover effects
   btn:HookScript("OnEnter", function(self)
+    if not IsEnabled(core) then return end
     if self.__glassBackdrop then
       self.__glassBackdrop:SetBackdropColor(0, 0, 0, 0.7)
       self.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 0.7)
     end
   end)
+
   btn:HookScript("OnLeave", function(self)
+    if not styleActive then return end
     if self.__glassBackdrop then
       self.__glassBackdrop:SetBackdropColor(0, 0, 0, 0.4)
       self.__glassBackdrop:SetBackdropBorderColor(0, 0, 0, 0.4)
@@ -485,51 +447,40 @@ local function SkinOneSocialButton(btn, skipNormal)
 end
 
 local function SkinSocialButtons(core)
-  SkinOneSocialButton(_G.QuickJoinToastButton, false)
-  SkinOneSocialButton(_G.ChatFrameChannelButton, false)
-  SkinOneSocialButton(_G.ChatFrameMenuButton, true) -- MenuButton icon IS the normal texture
+  -- Call on every pass. Individual buttons are idempotent and some Blizzard
+  -- buttons are created after RothChat's initial ADDON_LOADED phase.
+  SkinOneSocialButton(core, _G.QuickJoinToastButton, false)
+  SkinOneSocialButton(core, _G.ChatFrameChannelButton, false)
+  SkinOneSocialButton(core, _G.ChatFrameMenuButton, true)
 end
 
--- ============================================================================
--- BLIZZARD CHROME: hide background, glow, tab extras
--- ============================================================================
 local function StripBlizzardChrome(cf)
-  local chatName = cf:GetName()
+  local chatName = cf and cf:GetName()
   if not chatName then return end
 
-  -- Background frame
   local blizzBg = cf.Background or _G[chatName .. "Background"]
-  if blizzBg then blizzBg:SetAlpha(0) blizzBg:Hide() end
-
-  -- Keep TabGlow active. Blizzard uses this texture for unread whisper flashes.
-  local tabGlow = _G[chatName .. "TabGlow"]
-  if tabGlow then
-    tabGlow:SetAlpha(1)
+  if blizzBg then
+    blizzBg:SetAlpha(0)
+    blizzBg:Hide()
   end
 
-  -- ButtonFrame chrome
   StripButtonFrame(cf)
 
-  -- Hide Blizz ScrollBar (the big arrow overlay) — we have our own ScrollToBottom
   if cf.ScrollBar then
     cf.ScrollBar:SetAlpha(0)
     cf.ScrollBar:EnableMouse(false)
-    if cf.ScrollBar.Hide then cf.ScrollBar:Hide() end
+    cf.ScrollBar:Hide()
   end
 
-  -- Also hide the Blizz ScrollToBottomButton's Flash overlay
-  local stb = cf.ScrollToBottomButton
-  if stb and stb.Flash then stb.Flash:SetAlpha(0) end
+  if cf.ScrollToBottomButton and cf.ScrollToBottomButton.Flash then
+    cf.ScrollToBottomButton.Flash:SetAlpha(0)
+  end
 end
 
 local function EnsureChatBackgroundFrame(cf)
   local bg = backgrounds[cf]
-  if bg then
-    return bg
-  end
+  if bg then return bg end
 
-  -- Use cf:GetParent() so the background isn't clipped by cf:SetClipsChildren(true).
-  -- This is critical for smooth scrolling to work without cutting off the borders.
   bg = CreateFrame("Frame", nil, cf:GetParent() or UIParent, "BackdropTemplate")
   bg:SetFrameStrata("BACKGROUND")
   bg:SetFrameLevel(0)
@@ -556,18 +507,13 @@ local function ApplyChatBackgroundStyle(core, cf)
 
   local alpha = NS.Clamp(tonumber(core:Get("styleBackgroundAlpha")) or 0.4, 0, 1)
   local texture = core:Get("styleBgTexture")
-  if type(texture) ~= "string" or texture == "" then
-    texture = DEFAULT_BG_TEXTURE
-  end
+  if type(texture) ~= "string" or texture == "" then texture = DEFAULT_BG_TEXTURE end
   local fillR, fillG, fillB = ParseHexColor(core:Get("styleBackgroundColor"), 0, 0, 0)
 
-  if bg.__fill then
-    bg.__fill:SetTexture(texture)
-    bg.__fill:SetVertexColor(fillR, fillG, fillB, alpha)
-    bg.__fill:Show()
-  end
+  bg.__fill:SetTexture(texture)
+  bg.__fill:SetVertexColor(fillR, fillG, fillB, alpha)
+  bg.__fill:Show()
 
-  -- If older builds created gradient textures on this frame, keep them hidden.
   if bg.glassLeft then bg.glassLeft:Hide() end
   if bg.glassCenter then bg.glassCenter:Hide() end
   if bg.glassRight then bg.glassRight:Hide() end
@@ -576,8 +522,7 @@ local function ApplyChatBackgroundStyle(core, cf)
   if core:Get("styleBorder") then
     if not bg.__border then
       bg.__border = CreateFrame("Frame", nil, bg, "BackdropTemplate")
-      bg.__border:SetPoint("TOPLEFT", bg, "TOPLEFT", 0, 0)
-      bg.__border:SetPoint("BOTTOMRIGHT", bg, "BOTTOMRIGHT", 0, 0)
+      bg.__border:SetAllPoints(bg)
     end
 
     local borderTexture = core:Get("styleBorderTexture")
@@ -606,60 +551,35 @@ local function ApplyChatBackgroundStyle(core, cf)
   bg:Show()
 end
 
--- ============================================================================
--- MAIN: apply all styling to a chat frame
--- ============================================================================
 local function ApplyToChatFrame(core, cf)
   if not cf then return end
 
-  -- Font
-  local font = core:Get("styleFont")
-  local size = core:Get("styleFontSize") or 12
+  local font = GetConfiguredFont(core)
+  local size = tonumber(core:Get("styleFontSize")) or 12
   local outline = core:Get("styleFontOutline") or ""
 
-  if not font then
-    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
-    font = LSM and LSM:Fetch("font", "Friz Quadrata TT") or "Fonts\\FRIZQT__.TTF"
+  if type(cf.SetFont) == "function" then cf:SetFont(font, size, outline) end
+
+  if core:Get("styleShadow") then
+    if type(cf.SetShadowColor) == "function" then cf:SetShadowColor(0, 0, 0, 0.55) end
+    if type(cf.SetShadowOffset) == "function" then cf:SetShadowOffset(1, -1) end
+  else
+    if type(cf.SetShadowColor) == "function" then cf:SetShadowColor(0, 0, 0, 0) end
+    if type(cf.SetShadowOffset) == "function" then cf:SetShadowOffset(0, 0) end
   end
 
-  if type(cf.SetFont) == "function" then
-    cf:SetFont(font, size, outline)
-  end
-  local useShadow = core:Get("styleShadow")
-  if type(cf.SetShadowColor) == "function" then
-    if useShadow then
-      cf:SetShadowColor(0, 0, 0, 0.55)
-    else
-      cf:SetShadowColor(0, 0, 0, 0)
-    end
-  end
-  if type(cf.SetShadowOffset) == "function" then
-    if useShadow then
-      cf:SetShadowOffset(1, -1)
-    else
-      cf:SetShadowOffset(0, 0)
-    end
-  end
-
-  -- Skin components
   SkinEditBox(core, cf)
   SkinScrollButton(core, cf)
   SkinChatTab(core, cf)
   StripBlizzardChrome(cf)
 
-  -- Social buttons (only once, for first chat frame)
-  if cf == _G.ChatFrame1 and not M.__socialSkinned then
-    M.__socialSkinned = true
-    SkinSocialButtons(core)
-  end
+  if cf == _G.ChatFrame1 then SkinSocialButtons(core) end
 
-  -- Configurable background texture under the entire chat field.
-  local wantBG = core:Get("styleBackground")
-
-  if wantBG then
+  if core:Get("styleBackground") then
     ApplyChatBackgroundStyle(core, cf)
   elseif backgrounds[cf] then
     backgrounds[cf]:Hide()
+    if backgrounds[cf].__border then backgrounds[cf].__border:Hide() end
   end
 end
 
@@ -667,17 +587,95 @@ local function ApplyAllToFrames(core)
   for _, cf in ipairs(NS.GetChatFrames()) do
     ApplyToChatFrame(core, cf)
   end
+  SkinSocialButtons(core)
+end
+
+local function DeferApplyAll(core)
+  if M.__applyDeferred then return end
+  M.__applyDeferred = true
+  core:Defer(function()
+    M.__applyDeferred = false
+    if IsEnabled(core) then ApplyAllToFrames(core) end
+  end)
 end
 
 QueueApplyAll = function(core)
   if M.__applyQueued then return end
   M.__applyQueued = true
+
   NS.RunNextFrame(M, function()
     M.__applyQueued = false
-    if not core or not core:IsModuleEnabled("Style") then return end
-    if not core:Get("styleEnabled") then return end
+    if not IsEnabled(core) then return end
+    if InCombatLockdown() then
+      DeferApplyAll(core)
+      return
+    end
     ApplyAllToFrames(core)
   end, "RothChat:StyleApplyAll")
+end
+
+local function EnsureGlobalHooks(core)
+  if M.__tabUpdateHooked then return end
+  M.__tabUpdateHooked = true
+
+  if type(_G.FCFTab_UpdateColors) == "function" then
+    hooksecurefunc("FCFTab_UpdateColors", function(tabFrame)
+      if not IsEnabled(core) or not tabFrame then return end
+      if InCombatLockdown() then
+        QueueApplyAll(core)
+        return
+      end
+
+      if not tabFrame.__rothTabSkinned then
+        local tabName = tabFrame:GetName()
+        local cf = tabName and _G[tabName:gsub("Tab$", "")]
+        if cf then SkinChatTab(core, cf) end
+      else
+        SetTabHeight(tabFrame)
+      end
+    end)
+  end
+
+  -- Blizzard's function receives a chat frame, not a tab frame.
+  if type(_G.FCFTab_UpdateAlpha) == "function" then
+    hooksecurefunc("FCFTab_UpdateAlpha", function(chatFrame)
+      if not IsEnabled(core) or not chatFrame then return end
+      local name = chatFrame.GetName and chatFrame:GetName()
+      local tab = name and _G[name .. "Tab"]
+      if tab and tab.__rothTabSkinned then SetTabHeight(tab) end
+    end)
+  end
+end
+
+local function RegisterListeners(core)
+  if listenersRegistered then return end
+  listenersRegistered = true
+
+  core:On("CHAT_FRAME_READY", function(_, core2, chatFrame)
+    if not IsEnabled(core2) or not chatFrame then return end
+    if InCombatLockdown() then
+      QueueApplyAll(core2)
+    else
+      ApplyToChatFrame(core2, chatFrame)
+    end
+  end, M)
+
+  core:On("CHAT_LAYOUT_CHANGED", function(_, core2)
+    if IsEnabled(core2) then QueueApplyAll(core2) end
+  end, M)
+
+  core:On("COPY_OVERLAY_VISIBILITY", function(_, core2, chatFrame, visible)
+    local bg = chatFrame and backgrounds[chatFrame]
+    if not bg then return end
+
+    bg.__rothCopyHidden = visible and true or false
+    if visible then
+      bg:Hide()
+      if bg.__border then bg.__border:Hide() end
+    elseif IsEnabled(core2) and core2:Get("styleBackground") then
+      ApplyChatBackgroundStyle(core2, chatFrame)
+    end
+  end, M)
 end
 
 function M:Init(core)
@@ -686,104 +684,52 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
-  if not core:Get("styleEnabled") then
-    self:OnDisable(core)
-    return
-  end
-  local function ApplyAll()
-    core:OffOwner(self)
-    core:EnsureChatLifecycleHooks()
-    ApplyAllToFrames(core)
+  styleActive = true
+  listenersRegistered = false
+  M.__applyDeferred = false
+  core:EnsureChatLifecycleHooks()
+  RegisterListeners(core)
+  EnsureGlobalHooks(core)
 
-    core:On("CHAT_LAYOUT_CHANGED", function(_, core2)
-      if not core2:IsModuleEnabled("Style") then return end
-      if not core2:Get("styleEnabled") then return end
-      QueueApplyAll(core2)
-    end, self)
-
-    core:On("COPY_OVERLAY_VISIBILITY", function(_, core2, chatFrame, visible)
-      local bg = chatFrame and backgrounds[chatFrame]
-      if not bg then return end
-
-      bg.__rothCopyHidden = visible and true or false
-      if visible then
-        bg:Hide()
-        if bg.__border then bg.__border:Hide() end
-      elseif core2:IsModuleEnabled("Style") and core2:Get("styleEnabled") and core2:Get("styleBackground") then
-        ApplyChatBackgroundStyle(core2, chatFrame)
-      end
-    end, self)
-
-    -- Global hooks for consistent tab sizing
-    if not M.__tabUpdateHooked then
-      M.__tabUpdateHooked = true
-
-      -- FCFTab_UpdateColors fires for ALL tabs on every state change.
-      -- We use it to: (a) re-apply 20px height, (b) auto-skin unskinned tabs.
-      hooksecurefunc("FCFTab_UpdateColors", function(tabFrame, selected)
-        if not tabFrame then return end
-        -- Auto-skin any tab we haven't seen yet
-        if not tabFrame.__rothTabSkinned then
-          -- Find the associated chat frame
-          local tabName = tabFrame:GetName()
-          if tabName then
-            local cfName = tabName:gsub("Tab$", "")
-            local cf = _G[cfName]
-            if cf then
-              SkinChatTab(core, cf)
-            end
-          end
-        end
-        -- Always enforce 20px
-        if tabFrame.__rothTabSkinned then
-          if tabFrame.__rothFixingHeight then return end
-          tabFrame.__rothFixingHeight = true
-          tabFrame:SetHeight(20)
-          tabFrame.__rothFixingHeight = nil
-        end
-      end)
-
-      -- FCFTab_UpdateAlpha fires for alpha changes
-      if FCFTab_UpdateAlpha then
-        hooksecurefunc("FCFTab_UpdateAlpha", function(tabFrame)
-          if tabFrame and tabFrame.__rothTabSkinned then
-            if tabFrame.__rothFixingHeight then return end
-            tabFrame.__rothFixingHeight = true
-            tabFrame:SetHeight(20)
-            tabFrame.__rothFixingHeight = nil
-          end
-        end)
-      end
-
-      -- Tooltip anchoring: chat tooltips follow cursor (use default anchor)
-      hooksecurefunc("SetItemRef", function()
-        if GameTooltip and GameTooltip:IsShown() then
-          GameTooltip:SetOwner(UIParent, "ANCHOR_CURSOR")
-        end
-      end)
-    end
-  end
+  if core:Get("styleEnabled") == false then return end
 
   if InCombatLockdown() then
-    core:Defer(ApplyAll)
+    DeferApplyAll(core)
   else
-    ApplyAll()
+    ApplyAllToFrames(core)
   end
 end
 
 function M:OnLogin(core)
-  QueueApplyAll(core)
+  if core:Get("styleEnabled") ~= false then QueueApplyAll(core) end
 end
 
 function M:OnDisable(core)
+  styleActive = false
+  listenersRegistered = false
+  M.__applyQueued = false
+  M.__applyDeferred = false
+  NS.CancelScheduled(M)
+
   for _, bg in pairs(backgrounds) do
-    if bg then bg:Hide() end
+    if bg then
+      bg:Hide()
+      if bg.__border then bg.__border:Hide() end
+    end
+  end
+
+  for _, cf in ipairs(NS.GetChatFrames()) do
+    local name = cf:GetName()
+    local eb = name and _G[name .. "EditBox"]
+    if eb then SetEditBoxGlassAlpha(eb, EDIT_ALPHA_IDLE) end
   end
 end
 
 function M:Refresh(core)
-  if not core:IsModuleEnabled("Style") or not core:Get("styleEnabled") then
-    self:OnDisable(core)
+  if not IsEnabled(core) then
+    for _, bg in pairs(backgrounds) do
+      if bg then bg:Hide() end
+    end
     return
   end
   QueueApplyAll(core)
