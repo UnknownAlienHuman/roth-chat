@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "update/**"
+      - "fix/**"
   pull_request:
 
 permissions:
@@ -33,11 +34,14 @@ jobs:
       - name: Verify chat filter contract
         run: lua5.4 tests/core_chat_filter_spec.lua
 
+      - name: Verify module lifecycle contract
+        run: lua5.4 tests/core_module_lifecycle_spec.lua
+
       - name: Verify TOC metadata and load paths
         run: |
           grep -Fxq '## Interface: 120100' RothChat.toc
           grep -Fxq '## Author: Neomorph' RothChat.toc
-          grep -Fxq '## Version: 1.1.0' RothChat.toc
+          grep -Fxq '## Version: 1.1.1' RothChat.toc
           python3 - <<'PY'
           from pathlib import Path
 
