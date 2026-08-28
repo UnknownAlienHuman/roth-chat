@@ -708,6 +708,10 @@ function M:OnEnable(core)
       UpdateForChat(core, cf)
     end
     QueueRefreshAllChats(core)
+    -- Controls may be enabled after accessory modules completed their own
+    -- lifecycle. Re-emit frame readiness so ChatBar, Resize and CopyOverlay can
+    -- attach to the newly created hover surfaces.
+    core:QueueChatLifecycleRefresh(nil, "controls_enabled")
   end
 
   if InCombatLockdown() then
