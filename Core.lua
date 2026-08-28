@@ -716,11 +716,16 @@ function RothChat:DisableModule(name)
   local st = self.moduleState[name]
   if not module or not st then return false end
 
-  if st.active then
+  -- Teardown callbacks and their emitted events must observe the module as
+  -- inactive. This prevents another module from reacting to stale activation
+  -- state while OnDisable restores shared UI ownership.
+  local wasActive = st.active
+  st.active = false
+
+  if wasActive then
     SafeModuleCall(self, name, "OnDisable")
   end
 
-  st.active = false
   CleanupModuleRegistrations(self, module)
   return true
 end
