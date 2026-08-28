@@ -38,7 +38,7 @@ local function UrlCopyEnabled()
 end
 
 local function IsSafeChatString(v)
-  return type(v) == "string" and not NS.IsSecretValue(v)
+  return NS.CanAccessValue(v) and type(v) == "string"
 end
 
 local function AllowLinkify()
