@@ -1,8 +1,8 @@
-## Interface: 120001, 120005
+## Interface: 120100
 ## Title: Roth Chat
-## Notes: Modular immersive chat UI for Roth (Diablo-style).
-## Author: Roth Team
-## Version: 1.0.1
+## Notes: Modular immersive chat UI for WoW Retail / Midnight.
+## Author: Neomorph
+## Version: 1.1.0
 ## SavedVariables: RothChatDB
 ## Category-enUS: Chat
 ## Category-ruRU: Чат

@@ -50,7 +50,7 @@ local function SafeStripHyperlinks(text)
 end
 
 local function NormalizeCopyText(text)
-  if NS.IsSecretValue(text) then
+  if not NS.CanAccessValue(text) then
     return SECRET_PLACEHOLDER
   end
 
@@ -62,23 +62,23 @@ local function NormalizeCopyText(text)
     return ""
   end
 
-  -- Temporarily hide literal pipe escapes 
+  -- Temporarily hide literal pipe escapes
   text = text:gsub("||", "\1")
-  
+
   -- Colors: handle case insensitive e.g., |cFF000000 or |Cff000000
   text = text:gsub("|[cC]%x%x%x%x%x%x%x%x", "")
   text = text:gsub("|[rR]", "")
-  
+
   -- Textures and Atlases
   text = text:gsub("|[tT].-|[tT]", "")
   text = text:gsub("|[aA].-|[aA]", "")
-  
+
   -- K codes (often internal tracking/TTS markers)
   text = text:gsub("|[kK].-|[kK]", "")
-  
+
   -- Hyperlinks: if SafeStripHyperlinks isn't available or fails, this cleans up |H...|hText|h
   text = text:gsub("|[hH].-|[hH](.-)|[hH]", "%1")
-  
+
   -- Linebreaks
   text = text:gsub("|[nN]", "\n")
 

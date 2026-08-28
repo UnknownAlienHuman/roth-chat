@@ -8,7 +8,7 @@ local RothChat = CreateFrame("Frame")
 _G.RothChat = RothChat
 
 RothChat.name = "RothChat"
-RothChat.version = "1.0.1"
+RothChat.version = "1.1.0"
 
 RothChat.modules = {}        -- [moduleName] = moduleTable
 RothChat.moduleOrder = {}    -- ordered list
@@ -248,41 +248,28 @@ local function InitDB()
   local hadFontPreset = RothChatDB.profile.fontPreset ~= nil
   local hadTextSizePreset = RothChatDB.profile.textSizePreset ~= nil
 
-  -- Apply defaults (shallow; profile values are primitives)
+  -- Apply defaults (shallow; profile values are primitives).
   for k, v in pairs(DEFAULTS.profile) do
     if RothChatDB.profile[k] == nil then
       RothChatDB.profile[k] = v
     end
   end
 
-  -- Profile versioning / minimal migration
+  -- Additive profile migration. Never re-enable features that the user
+  -- explicitly disabled merely because the addon version changed.
   local prevVersion = RothChatDB.profile.__version
   if prevVersion ~= RothChat.version then
-    -- Ensure core features are on after upgrades (older builds were broken without these).
-    RothChatDB.profile.restoreEnabled = true
-    RothChatDB.profile.immersionEnabled = true
-    RothChatDB.profile.tickerEnabled = true
-    RothChatDB.profile.hoverControls = true
-
-    -- Force-enable critical modules on upgrade (user can disable later in options).
-    RothChatDB.profile.module_Controls_enabled = true
-    RothChatDB.profile.module_CopyOverlay_enabled = true
-    RothChatDB.profile.module_ChatBar_enabled = true
-    RothChatDB.profile.module_Restore_enabled = true
-    RothChatDB.profile.module_Ticker_enabled = true
-    RothChatDB.profile.module_Style_enabled = true
-
-    -- New in v0.9.3: separate fade-in/out durations
     if RothChatDB.profile.immersionFadeInDuration == nil then RothChatDB.profile.immersionFadeInDuration = 0.12 end
     if RothChatDB.profile.immersionFadeOutDuration == nil then RothChatDB.profile.immersionFadeOutDuration = 0.65 end
     if RothChatDB.profile.hoverFadeInDuration == nil then RothChatDB.profile.hoverFadeInDuration = 0.12 end
     if RothChatDB.profile.hoverFadeOutDuration == nil then RothChatDB.profile.hoverFadeOutDuration = 0.45 end
-    -- Keep legacy single-duration sliders in a sane range
+
+    -- Keep legacy single-duration sliders in a sane range.
     if type(RothChatDB.profile.hoverFadeDuration) == "number" and RothChatDB.profile.hoverFadeDuration > 1.0 then
       RothChatDB.profile.hoverFadeDuration = RothChatDB.profile.hoverFadeInDuration
     end
 
-    -- History module is legacy (Restore handles persistence); keep it off by default.
+    -- History is legacy; Restore owns current persistence.
     if RothChatDB.profile.module_History_enabled == nil then
       RothChatDB.profile.module_History_enabled = false
     end
@@ -291,7 +278,9 @@ local function InitDB()
       RothChatDB.profile.timestampColor = DEFAULTS.profile.timestampColor
     end
 
-    RothChatDB.profile.stylePreset = "minimal"
+    if not hadStylePreset then
+      RothChatDB.profile.stylePreset = InferStylePreset(RothChatDB.profile)
+    end
     if not hadFontPreset then
       RothChatDB.profile.fontPreset = InferFontPreset(RothChatDB.profile)
     end
@@ -453,21 +442,20 @@ local function MultiErrorHandler(err)
   return tostring(err) .. "\n" .. debugstack(2, 25, 25)
 end
 
-local function SafeCallMulti(label, fn, ...)
+local function SafeCallFilter(label, fn, ...)
   if type(fn) ~= "function" then
     return false
   end
 
-  local ok, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14 =
-    xpcall(fn, MultiErrorHandler, ...)
+  local ok, discard, replacement = xpcall(fn, MultiErrorHandler, ...)
   if not ok then
     if DEFAULT_CHAT_FRAME then
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffff4040%s error|r: %s", tostring(label or "RothChat"), tostring(r1)))
+      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffff4040%s error|r: %s", tostring(label or "RothChat"), tostring(discard)))
     end
     return false
   end
 
-  return true, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14
+  return true, discard, replacement
 end
 
 local function GetOrCreateMessageFilterState(self, event)
@@ -480,10 +468,17 @@ local function GetOrCreateMessageFilterState(self, event)
     entries = {},
   }
 
-  -- Message-event filters are only allowed to replace arg1 (display text).
-  -- Returning untouched chat routing args from tainted addon code can poison
-  -- Blizzard's HistoryKeeper / access-ID path for channel and sender metadata.
-  state.dispatcher = function(chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14)
+  -- RothChat filters may replace only arg1 (display text). No-op paths return
+  -- only false so Blizzard keeps its current secure tuple; when arg1 changes,
+  -- all 19 fields are returned and every non-text field remains unchanged.
+  state.dispatcher = function(chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19)
+    -- ChatFrameUtil normally skips insecure callbacks when the tuple is not
+    -- accessible. Keep the same fail-closed behavior for legacy fallback paths.
+    if not NS.CanAccessAllValues(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19) then
+      return false
+    end
+
+    local originalArg1 = arg1
     local current = self._messageFilterState[evt]
     local entries = current and current.entries
     local shouldDiscardMessage = false
@@ -492,14 +487,19 @@ local function GetOrCreateMessageFilterState(self, event)
       for i = 1, #entries do
         local entry = entries[i]
         if entry and entry[1] then
-          local ok, discard, newArg1 =
-            SafeCallMulti("RothChat:MsgFilter:" .. evt, entry[1], chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14)
+          local ok, discard, newArg1 = SafeCallFilter(
+            "RothChat:MsgFilter:" .. evt,
+            entry[1],
+            chatFrame, evt,
+            arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+            arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19
+          )
 
           if ok then
-            if discard then
+            if NS.CanAccessValue(discard) and discard then
               shouldDiscardMessage = true
               break
-            elseif newArg1 ~= nil then
+            elseif NS.CanAccessValue(newArg1) and newArg1 ~= nil and type(newArg1) == "string" then
               arg1 = newArg1
             end
           end
@@ -507,7 +507,19 @@ local function GetOrCreateMessageFilterState(self, event)
       end
     end
 
-    return shouldDiscardMessage, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14
+    if shouldDiscardMessage then
+      return true
+    end
+
+    -- A false/nil second return tells Blizzard to keep the current transformed
+    -- tuple. Repack all 19 fields only when visible text actually changed.
+    if arg1 == originalArg1 then
+      return false
+    end
+
+    return false,
+      arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+      arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19
   end
 
   self._messageFilterState[event] = state
@@ -684,12 +696,18 @@ RothChat._addMsgCallbacks = {} -- sorted list: { {fn, owner, priority}, ... }
 RothChat._addMsgHooked = {}   -- [chatFrame] = true
 
 local function DispatchAddMessage(chatFrame, text, r, g, b, ...)
-  if NS.IsSecretValue(text) then return end
+  -- AddMessage can receive restricted trailing metadata. RothChat consumers only
+  -- need the rendered text and color tuple, so do not forward opaque varargs.
+  if not NS.CanAccessValue(text) or type(text) ~= "string" then return end
+  if not NS.CanAccessValue(r) or type(r) ~= "number" then r = nil end
+  if not NS.CanAccessValue(g) or type(g) ~= "number" then g = nil end
+  if not NS.CanAccessValue(b) or type(b) ~= "number" then b = nil end
+
   local cbs = RothChat._addMsgCallbacks
   for i = 1, #cbs do
     local entry = cbs[i]
     if entry and entry[1] then
-      NS.SafeCall("AddMsgHook", entry[1], chatFrame, text, r, g, b, ...)
+      NS.SafeCall("AddMsgHook", entry[1], chatFrame, text, r, g, b)
     end
   end
 end

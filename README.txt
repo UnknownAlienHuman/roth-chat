@@ -1,48 +1,74 @@
-Roth Chat (RothChat) v0.6.0
+Roth Chat (RothChat) v1.1.0
+Retail / Midnight 12.1.0 — Interface 120100
+Author: Neomorph
 
 A modular and immersive chat addon inspired by the aesthetics of Glass and the modularity of Prat.
 
 ---
 
 ### Core Philosophy
-- **Immersive:** The chat should be there when you need it and disappear when you don't. By default, the chat window fades out when not in use, leaving only a "ticker" line with the latest message.
-- **Modern & Efficient:** Built with a clean, modular architecture. Uses modern WoW API features like AnimationGroups to avoid performance-heavy OnUpdate scripts.
-- **Intuitive:** Interaction is designed to be simple and discoverable.
+
+- **Immersive:** Chat remains available when needed and fades when idle. The optional ticker can show recent messages while the primary chat frame is hidden.
+- **Modular:** Styling, controls, persistence, copying, URLs, timestamps, alerts, resizing, and channel behavior are isolated modules connected through a central core.
+- **Efficient:** Chat-frame hooks are consolidated, scheduling is shared, queues avoid front-removal churn, and update drivers run only while work is active.
+- **Restriction-aware:** Chat messaging lockdown, combat-sensitive surfaces, and inaccessible values degrade safely instead of being probed or retained.
 
 ---
 
 ### Key Features
 
-**1. Glass-like Design & Immersion**
-- Chat windows have a clean, borderless, semi-transparent background.
-- **Immersive Mode:** When the chat is not active (no mouse-over, not pinned), the main window fades out.
-- **Ticker:** A single, scrolling line of the last message remains visible at the bottom of the chat, even when the main window is hidden.
-- **Hover-to-Reveal:** All controls (Blizzard buttons, ChatBar) smoothly fade in when you move your mouse over the chat area and fade out when you leave.
-- **Pin Button:** A small button allows you to "pin" the chat controls, keeping them visible.
+**1. Immersive Chat**
+- Fading primary chat window.
+- Optional latest-message ticker.
+- Hover-to-reveal controls.
+- Pin button for persistent controls.
 
 **2. Double-Click to Copy**
-- Simply **double-click** anywhere on the chat frame (or its surrounding hover area) to open a copy-friendly overlay.
-- The overlay contains the recent chat history in a selectable `EditBox`, making it easy to copy text with `Ctrl+C`.
+- Double-click a chat frame or its hover area to open a selectable copy overlay.
+- Recent accessible render text is available for normal selection and `Ctrl+C`.
 - Press `ESC` to close the overlay.
 
 **3. ChatBar**
-- A compact bar of buttons for quickly switching to different chat channels (`/say`, `/party`, `/guild`, etc.).
-- Appears and disappears with the other controls.
-- Its position and button size are configurable in the options.
+- Compact shortcuts for `/say`, `/party`, `/raid`, `/instance`, `/guild`, `/officer`, channels, whisper, and reply.
+- Follows the active docked chat frame.
+- Respects chat messaging lockdown.
 
 **4. Persistent Scrollback**
-- The addon saves your chat history for each window across sessions.
-- When you log in, your chat windows are restored with their recent messages.
-- This saved history is also used as the source for the copy overlay, ensuring you can copy more than what's currently visible.
+- Restore keeps accessible rendered chat lines per window across reloads and sessions.
+- Legacy `Modules/History.lua` remains disabled to avoid duplicate persistence paths.
+
+**5. Formatting and Alerts**
+- Optional timestamps and compact channel formatting.
+- Clickable URL links with a copy popup.
+- Class-colored names where Blizzard supports them.
+- Whisper sound and inactive dock-tab alerting.
+
+**6. Styling and Interaction**
+- Fonts, shadows, background fill, border, and edit-box positioning.
+- Smooth scrolling and resize grip.
+- Temporary whisper-window and dock lifecycle handling.
 
 ---
 
-### Engineering Notes
-- **Modular Core:** The addon is split into independent modules (Style, Controls, Ticker, etc.) that communicate through a central event bus. This makes the code clean, maintainable, and resilient to errors in any single module.
-- **Combat & Taint Safe:** Uses safe practices to avoid errors during combat, including a deferred-call mechanism for protected actions and careful handling of potentially "secret" values from the API.
-- **No Copied Code:** While inspired by great addons like Prat and Glass, the implementation is a 100% clean-room project.
+### Retail 12.1 Engineering Notes
+
+- The centralized chat filter accepts Blizzard's complete 19-argument callback tuple.
+- Roth Chat filters may replace only the visible message string (`arg1`).
+- No-op paths return only `false`, leaving Blizzard's current secure tuple in place.
+- A real text replacement returns `arg1` plus all remaining 18 fields unchanged.
+- `canaccessvalue` / `canaccessallvalues` are checked before inspection, comparison, formatting, table use, or storage.
+- If the tuple is inaccessible, Roth Chat skips its filter callbacks and leaves Blizzard's payload untouched.
+- The post-render `AddMessage` hook forwards only accessible text and numeric color primitives; trailing opaque metadata is not retained.
+- Addon upgrades add missing defaults but preserve modules and features explicitly disabled by the user.
 
 ---
 
 ### Slash Command
-`/rothchat` - Opens the addon's options panel.
+
+`/rothchat` — opens the Roth Chat settings panel when the current combat/chat restriction state permits it.
+
+---
+
+### Validation
+
+Static migration review is complete. Live-client verification is still required for all chat types, temporary windows, restrictions, alerts, copying, ticker behavior, and reload persistence before publishing the release.

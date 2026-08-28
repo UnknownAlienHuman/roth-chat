@@ -1,4 +1,4 @@
-﻿-- RothChat - Resize module (Rubber Band)
+-- RothChat - Resize module (Rubber Band)
 -- Goal: Easy resize via a grip handle OR dragging the main chat tab.
 -- Feature: "Rubber band" effect - chat snaps back to original size after inactivity.
 
