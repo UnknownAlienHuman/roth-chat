@@ -9,7 +9,7 @@
 
 ## Retail 12.1 migration
 
-Implemented on `update/retail-12.1.0-chat-contract`:
+Implemented on `update/retail-12.1.0-chat-contract` and reviewed in draft PR #2:
 
 - [x] Update TOC metadata to Interface `120100`, version `1.1.0`, author Neomorph.
 - [x] Expand the centralized message-filter dispatcher from the obsolete 14-field shape to Blizzard's full 19-argument contract.
@@ -21,7 +21,8 @@ Implemented on `update/retail-12.1.0-chat-contract`:
 - [x] Stop forwarding trailing `AddMessage` varargs into addon modules; expose only accessible rendered text and color primitives.
 - [x] Keep inaccessible filter callbacks fail-closed without copying or retaining their payload.
 - [x] Make profile migration additive so upgrades preserve explicitly disabled modules and features.
-- [x] Update README, architecture, agent guide, and extended feature documentation.
+- [x] Remove the pre-existing UTF-8 BOM from `Modules/Resize.lua` after it was caught by `luac5.1`.
+- [x] Update README, architecture, code index/graph, agent guide, and extended feature documentation.
 - [x] Add a GitHub Actions Lua 5.1 syntax gate for first-party addon files.
 
 ## Release-blocking live-client validation
@@ -82,11 +83,12 @@ These items cannot be certified by static source review and must be run in the t
 
 - [x] Branch is based directly on `main` and contains only scoped addon, documentation, and CI changes.
 - [x] Review confirms the dispatcher signature and return path contain all 19 arguments.
+- [x] Review confirms Blizzard treats a callback return of `false` with no second return as “keep the existing transformed tuple”.
 - [x] Review confirms first-party filters replace only `arg1`.
 - [x] Review confirms direct whisper `lineID` use is access-gated before type, comparison, arithmetic, or table-key use.
 - [x] Review confirms render-facing consumers no longer receive opaque `AddMessage` trailing metadata.
-- [ ] GitHub Actions Lua 5.1 syntax workflow passes for the final branch head.
-- [ ] Final pull-request diff and whitespace review passes after documentation is complete.
+- [x] GitHub Actions Lua 5.1 syntax workflow passes for the PR head.
+- [x] Full pull-request diff and whitespace review contains only scoped code, documentation, metadata, BOM cleanup, and CI changes.
 
 Static validation does not substitute for the live-client matrix above.
 
