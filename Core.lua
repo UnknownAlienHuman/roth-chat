@@ -468,9 +468,9 @@ local function GetOrCreateMessageFilterState(self, event)
     entries = {},
   }
 
-  -- RothChat filters may replace only arg1 (display text). The complete current
-  -- 19-argument chat tuple is passed through unchanged so Blizzard retains all
-  -- routing, sender, access-ID, line-ID, and metadata fields.
+  -- RothChat filters may replace only arg1 (display text). No-op paths return
+  -- only false so Blizzard keeps its current secure tuple; when arg1 changes,
+  -- all 19 fields are returned and every non-text field remains unchanged.
   state.dispatcher = function(chatFrame, evt, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19)
     -- ChatFrameUtil normally skips insecure callbacks when the tuple is not
     -- accessible. Keep the same fail-closed behavior for legacy fallback paths.
@@ -478,6 +478,7 @@ local function GetOrCreateMessageFilterState(self, event)
       return false
     end
 
+    local originalArg1 = arg1
     local current = self._messageFilterState[evt]
     local entries = current and current.entries
     local shouldDiscardMessage = false
@@ -506,7 +507,17 @@ local function GetOrCreateMessageFilterState(self, event)
       end
     end
 
-    return shouldDiscardMessage,
+    if shouldDiscardMessage then
+      return true
+    end
+
+    -- A false/nil second return tells Blizzard to keep the current transformed
+    -- tuple. Repack all 19 fields only when visible text actually changed.
+    if arg1 == originalArg1 then
+      return false
+    end
+
+    return false,
       arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
       arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19
   end
@@ -688,9 +699,9 @@ local function DispatchAddMessage(chatFrame, text, r, g, b, ...)
   -- AddMessage can receive restricted trailing metadata. RothChat consumers only
   -- need the rendered text and color tuple, so do not forward opaque varargs.
   if not NS.CanAccessValue(text) or type(text) ~= "string" then return end
-  if not NS.CanAccessValue(r) then r = nil end
-  if not NS.CanAccessValue(g) then g = nil end
-  if not NS.CanAccessValue(b) then b = nil end
+  if not NS.CanAccessValue(r) or type(r) ~= "number" then r = nil end
+  if not NS.CanAccessValue(g) or type(g) ~= "number" then g = nil end
+  if not NS.CanAccessValue(b) or type(b) ~= "number" then b = nil end
 
   local cbs = RothChat._addMsgCallbacks
   for i = 1, #cbs do
