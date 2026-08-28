@@ -52,11 +52,13 @@ A modular and immersive chat addon inspired by the aesthetics of Glass and the m
 
 ### Retail 12.1 Engineering Notes
 
-- The centralized chat filter preserves Blizzard's complete 19-argument callback tuple.
+- The centralized chat filter accepts Blizzard's complete 19-argument callback tuple.
 - Roth Chat filters may replace only the visible message string (`arg1`).
+- No-op paths return only `false`, leaving Blizzard's current secure tuple in place.
+- A real text replacement returns `arg1` plus all remaining 18 fields unchanged.
 - `canaccessvalue` / `canaccessallvalues` are checked before inspection, comparison, formatting, table use, or storage.
 - If the tuple is inaccessible, Roth Chat skips its filter callbacks and leaves Blizzard's payload untouched.
-- The post-render `AddMessage` hook forwards only accessible text and color primitives; trailing opaque metadata is not retained.
+- The post-render `AddMessage` hook forwards only accessible text and numeric color primitives; trailing opaque metadata is not retained.
 - Addon upgrades add missing defaults but preserve modules and features explicitly disabled by the user.
 
 ---
