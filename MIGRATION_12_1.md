@@ -75,6 +75,8 @@ The contract test covers:
 - discard behavior;
 - last-owner unregister cleanup.
 
+The branch workflow passed all static checks before review. Any later code change must produce another successful run before merge or release.
+
 ## Retail runtime matrix
 
 Static checks are necessary but not sufficient. Do not mark the release runtime-verified until these are completed on the current Retail client.
@@ -117,7 +119,7 @@ Static checks are necessary but not sufficient. Do not mark the release runtime-
 
 ### Release gate
 
-- [ ] Latest CI run passes.
+- [x] Static CI passed for the reviewed implementation.
 - [ ] No Lua errors with only Roth Chat enabled.
 - [ ] No repeating taint/secret/forbidden errors in combat or restricted chat.
 - [ ] Runtime matrix results and tested build are recorded here.
@@ -125,5 +127,5 @@ Static checks are necessary but not sufficient. Do not mark the release runtime-
 
 ## Runtime result
 
-**Status:** `STATIC_VALIDATION_ADDED; LIVE_CLIENT_TEST_PENDING`  
+**Status:** `STATIC_VALIDATION_PASSED; LIVE_CLIENT_TEST_PENDING`  
 **Last updated:** 2026-08-27
