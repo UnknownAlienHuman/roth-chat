@@ -209,7 +209,7 @@ function M:OnEnable(core)
   RegisterLifecycleListeners(core)
 
   local function ApplyAll()
-    if not core:IsModuleActive("Restore") and core._loginComplete then return end
+    if not self.active then return end
     for _, cf in ipairs(NS.GetChatFrames()) do
       ApplyFadeSettings(cf)
     end
