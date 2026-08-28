@@ -4,13 +4,27 @@
 flowchart TD
   T["RothChat.toc"] --> U["Util.lua"]
   T --> C["Core.lua"]
-  U --> C
-  C --> M["chat modules"]
-  M --> S["Style / Colors / Resize"]
-  M --> I["Dock / Controls / ChatBar"]
-  M --> X["CopyOverlay / UrlCopy"]
-  M --> R["Restore / Ticker (History disabled)"]
+  U -->|"access gates / scheduler / frame helpers"| C
+
+  BF["Blizzard ChatFrameUtil filter\n19-argument tuple"] -->|"canaccessallvalues"| C
+  C -->|"arg1-only transforms\nfull tuple returned"| F["Timestamps / UrlCopy / other filters"]
+  F --> C
+  C -->|"19 arguments preserved"| BF
+
+  BA["ChatFrame:AddMessage"] -->|"accessible rendered text + colors"| C
+  C --> R["Restore"]
+  C --> K["Ticker"]
+  C --> A["Alerts"]
+  C --> X["CopyOverlay consumers"]
+
+  C --> P["Style / Colors / Resize"]
+  C --> I["Dock / Controls / ChatBar"]
+  C --> B["Cleaner / Sticky"]
+
   T --> O["Options.lua"]
   O --> C
   T --> L["ThirdParty libraries"]
+  T -. "disabled" .-> H["Legacy History.lua"]
 ```
+
+The filter path and post-render `AddMessage` path are separate trust boundaries. Raw filter tuples and trailing opaque render metadata must not enter module state or SavedVariables.
