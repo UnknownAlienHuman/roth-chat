@@ -11,9 +11,10 @@ local NS = {
 }
 
 _G.date = function(format, timestamp)
-  assert(format == "[%H:%M]")
   assert(timestamp == 12345)
-  return "[12:34]"
+  if format == "[%H:%M]" then return "[12:34]" end
+  if format == "[%H:%M:%S]" then return "[12:34:56]" end
+  error("unexpected date format: " .. tostring(format))
 end
 
 assert(loadfile("ChatText.lua"))("RothChat", NS)
@@ -23,6 +24,7 @@ assert(NS.NormalizeHexColor("|cffA1B2C3", "999999") == "A1B2C3")
 assert(NS.NormalizeHexColor("invalid", "999999") == "999999")
 
 assert(NS.FormatChatTimestamp(12345, false) == "[12:34] ")
+assert(NS.FormatChatTimestamp(12345, false, nil, "%H:%M:%S") == "[12:34:56] ")
 assert(NS.FormatChatTimestamp(12345, true, "8e8e8e") == "|cff8E8E8E[12:34]|r ")
 
 local timestamped = "|cff8E8E8E[12:34]|r hello"
