@@ -1,13 +1,6 @@
 name: Validate RothChat
 
 on:
-  push:
-    branches:
-      - main
-      - "update/**"
-      - "fix/**"
-      - "audit/**"
-  pull_request:
   workflow_dispatch:
 
 permissions:
