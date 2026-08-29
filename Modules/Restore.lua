@@ -103,7 +103,9 @@ local function BuildExport(entries, maxLines, includeTimestamps)
     if text ~= "" then
       local timestamp = type(entry[1]) == "number" and entry[1] or nil
       if includeTimestamps and timestamp then
-        text = NS.FormatChatTimestamp(timestamp, false) .. text
+        -- Preserve the previous copy/export precision while keeping the live
+        -- display timestamp at its existing minute precision.
+        text = NS.FormatChatTimestamp(timestamp, false, nil, "%H:%M:%S") .. text
       end
       out[#out + 1] = text
     end
