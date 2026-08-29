@@ -4,21 +4,31 @@ This file contains only unresolved validation and release work. Completed engine
 
 ## Current candidate
 
-- Version: `1.1.1`
+- Version: `1.1.1` plus unreleased 2026-08-29 audit changes
 - Retail target: `12.1.0`
 - Interface: `120100`
 - Source baseline: `12.1.0.69497` / `Gethe/wow-ui-source@027d26c3406d`
-- Status: implementation complete for review; current-branch validation and live-client matrix still required
+- Status: structured-text implementation ready for review; exact-head workflow and live-client matrix required
 
 ## Automated release gate
 
 - [ ] Current head parses every Lua file with `luac`.
 - [ ] `tests/core_chat_filter_spec.lua` passes.
 - [ ] `tests/core_module_lifecycle_spec.lua` passes.
+- [ ] `tests/chat_text_spec.lua` passes.
+- [ ] `tests/timestamps_spec.lua` passes.
 - [ ] `tests/url_copy_spec.lua` passes.
 - [ ] `tests/cleaner_spec.lua` passes.
+- [ ] `tests/restore_spec.lua` passes.
 - [ ] TOC metadata and every active TOC path pass validation.
 - [ ] The successful workflow run belongs to the exact commit being merged or released.
+
+## Remaining engineering audit
+
+- [ ] Add rate-limited/deduplicated reporting for `NS.SafeCall` failures in hot callbacks.
+- [ ] Add the same suppression policy to the core multi-return message-filter reporter without changing filter arity.
+- [ ] Verify that suppressed diagnostics still retain the first complete stack and a later suppression count.
+- [ ] Decide whether diagnostic hardening belongs in this unreleased pass or the next patch after live testing.
 
 ## Live Retail startup and module lifecycle
 
@@ -28,6 +38,19 @@ This file contains only unresolved validation and release work. Completed engine
 - [ ] `/reload` produces no duplicate hooks or restored messages.
 - [ ] Logout/login keeps bounded Restore data for permanent windows only.
 - [ ] Starting with `profile.enabled = false` leaves feature modules inactive.
+
+## Restore schema and copy matrix
+
+- [ ] Load legacy schema-v1 Restore rows that contain Roth's colored `[HH:MM]` prefix; replay shows exactly one timestamp.
+- [ ] New schema-v2 rows store timestamp-free durable text with marker `2`.
+- [ ] Replay with Timestamps enabled reconstructs one colored minute-resolution timestamp.
+- [ ] Replay with Timestamps disabled contains no Roth timestamp.
+- [ ] Copy with `copyIncludeTimestamps=true` contains exactly one second-resolution timestamp from Restore.
+- [ ] Copy with `copyIncludeTimestamps=false` contains no leading timestamp from Restore, message-buffer or FontString fallback.
+- [ ] Normal item/spell hyperlinks remain usable after logout/login replay.
+- [ ] BNet/account-name tokens are not retained in SavedVariables.
+- [ ] Censored/report-censored callbacks are replaced by stable placeholder text before persistence.
+- [ ] Temporary whisper frames never create or reuse a permanent Restore bucket.
 
 ## Chat and restriction matrix
 
@@ -75,15 +98,17 @@ This file contains only unresolved validation and release work. Completed engine
 - [ ] Cleaner normal mode preserves the active client locale.
 - [ ] Cleaner compact mode changes only the intended channel tags and restores the original strings on disable.
 
-## Source contract recheck
+## Source and external-contract recheck
 
 - [ ] Record actual callback arity for accessible say, whisper, channel and system filters on the current Retail build without serializing restricted values.
 - [ ] Compare live behavior with the exported `ChatFrameOverrides.lua` path tracked as `WOWUI-2026-011` in the engineering KB.
-- [ ] Update or retire the KB issue only when runtime and current exported source agree.
+- [ ] Recheck the reviewed Prat fixed-width handler after its next source update.
+- [ ] Replace the non-authoritative Chattynator fork evidence only if a current public upstream snapshot becomes available.
+- [ ] Update or retire KB entries only when runtime and current exported source agree.
 
 ## Packaging gate
 
 - [ ] Record the tested Retail build and results in `MIGRATION_12_1.md`.
 - [ ] No Lua, taint, secret-value or forbidden-operation errors with only Roth Chat enabled.
 - [ ] Review the final diff for runtime files, metadata, licenses and intended documentation/tests only.
-- [ ] Produce a clean addon ZIP without repository-only planning/audit artifacts unless the release workflow explicitly excludes them.
+- [ ] Produce a clean addon ZIP without research, agent, TODO, architecture or workflow files unless the release workflow explicitly includes them.
