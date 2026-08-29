@@ -1,4 +1,4 @@
--- RothChat - mutation-safe callback registries.
+-- RothChat - mutation-safe chat callback registries.
 -- Loaded after Core.lua and before modules activate. Replaces array mutation
 -- during dispatch with tombstones/deferred additions and uses Lua 5.1-safe
 -- pcall varargs while preserving return arity.
@@ -58,95 +58,6 @@ local function HasActive(list)
 end
 
 -- ---------------------------------------------------------------------------
--- Internal event bus
--- ---------------------------------------------------------------------------
-
-RothChat._listenerStates = RothChat._listenerStates or {}
-RothChat._listeners = RothChat._listeners or {}
-
-local function GetListenerState(self, event)
-  local state = self._listenerStates[event]
-  if state then return state end
-  state = { entries = {}, pending = {}, depth = 0 }
-  self._listenerStates[event] = state
-  self._listeners[event] = state.entries
-  return state
-end
-
-local function FlushListenerState(self, event, state)
-  if state.depth > 0 then return end
-  Compact(state.entries)
-  for index = 1, #state.pending do
-    local entry = state.pending[index]
-    if entry and type(entry.fn) == "function" then
-      state.entries[#state.entries + 1] = entry
-    end
-    state.pending[index] = nil
-  end
-  if #state.entries == 0 then
-    self._listenerStates[event] = nil
-    self._listeners[event] = nil
-  end
-end
-
-function RothChat:On(event, fn, owner)
-  if type(event) ~= "string" or type(fn) ~= "function" then return end
-  local state = GetListenerState(self, event)
-  local entry = { fn = fn, owner = owner }
-  if state.depth > 0 then
-    state.pending[#state.pending + 1] = entry
-  else
-    state.entries[#state.entries + 1] = entry
-  end
-end
-
-function RothChat:Off(event, fn)
-  local state = self._listenerStates[event]
-  if not state or type(fn) ~= "function" then return end
-
-  for index = 1, #state.entries do
-    local entry = state.entries[index]
-    if entry and entry.fn == fn then entry.fn = nil end
-  end
-  for index = 1, #state.pending do
-    local entry = state.pending[index]
-    if entry and entry.fn == fn then entry.fn = nil end
-  end
-  FlushListenerState(self, event, state)
-end
-
-function RothChat:OffOwner(owner)
-  if not owner then return end
-  for event, state in pairs(self._listenerStates) do
-    for index = 1, #state.entries do
-      local entry = state.entries[index]
-      if entry and entry.owner == owner then entry.fn = nil end
-    end
-    for index = 1, #state.pending do
-      local entry = state.pending[index]
-      if entry and entry.owner == owner then entry.fn = nil end
-    end
-    FlushListenerState(self, event, state)
-  end
-end
-
-function RothChat:Emit(event, ...)
-  local state = self._listenerStates[event]
-  if not state then return end
-
-  state.depth = state.depth + 1
-  local limit = #state.entries
-  for index = 1, limit do
-    local entry = state.entries[index]
-    if entry and type(entry.fn) == "function" then
-      NS.SafeCall("RothChat:Emit:" .. event, entry.fn, entry.owner, self, ...)
-    end
-  end
-  state.depth = state.depth - 1
-  FlushListenerState(self, event, state)
-end
-
--- ---------------------------------------------------------------------------
 -- Blizzard message-event filter registry
 -- ---------------------------------------------------------------------------
 
@@ -156,6 +67,7 @@ RothChat._moduleFilters = RothChat._moduleFilters or setmetatable({}, { __mode =
 local function FlushFilterState(self, event, state)
   if state.depth > 0 then return end
   Compact(state.entries)
+
   for index = 1, #state.pending do
     local entry = state.pending[index]
     if entry and type(entry[1]) == "function" then InsertSorted(state.entries, entry) end
@@ -331,12 +243,17 @@ local function InstallAddMessageRegistration(callback, owner, priority)
 
   local wrapped
   wrapped = function(...)
+    -- Diagnostics are emitted through DEFAULT_CHAT_FRAME:AddMessage. They must
+    -- not re-enter persistence/ticker/alert consumers while reporting a failure
+    -- from one of those same consumers.
+    if NS.IsReportingError and NS.IsReportingError() then return end
+
     RothChat._addMsgDispatchDepth = RothChat._addMsgDispatchDepth + 1
     local results = PackValues(pcall(callback, ...))
     RothChat._addMsgDispatchDepth = RothChat._addMsgDispatchDepth - 1
 
-    if not results[1] then
-      if NS.ReportError then NS.ReportError("RothChat:AddMessage", results[2]) end
+    if not results[1] and NS.ReportError then
+      NS.ReportError("RothChat:AddMessage", results[2])
     end
     if RothChat._addMsgDispatchDepth == 0 then ScheduleAddMessageFlush() end
     if results[1] then return UnpackValues(results, 2) end
