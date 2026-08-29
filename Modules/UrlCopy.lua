@@ -1,6 +1,5 @@
 -- RothChat - UrlCopy module
--- Goal: Make URLs in chat clickable. Clicking opens a popup to copy the link.
--- Inspired by Prat's URL copy functionality.
+-- Makes URLs in accessible chat text clickable. Clicking opens a copy popup.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -11,11 +10,11 @@ local M = {
   description = "Makes URLs clickable. Click to open a copy popup.",
 }
 
-local COLOR_URL = "0099FF" -- Light blue
+local COLOR_URL = "0099FF"
 local LINK_TYPE = "rothchaturl"
 
--- URL patterns: %w matches only ASCII (safe for UTF-8 — multibyte chars >127 won't match).
--- Raw UTF-8 in URL paths (e.g. /путь) won't be captured; percent-encoded paths work fine.
+-- %w is deliberately ASCII-only here. Raw non-ASCII URL paths are left as
+-- ordinary text; percent-encoded paths remain supported.
 local HTTP_PATTERN = "https?://[%w%-%._~:/%?#%[%]@!$&'()%*+,;=%%]+"
 local WWW_PATTERN = "www%.[%w%-%._~:/%?#%[%]@!$&'()%*+,;=%%]+"
 local DISCORD_PATTERN = "%f[%w]discord%.gg/[%w%-]+"
@@ -26,19 +25,41 @@ local IP_PATTERN = "%f[%d](%d+%.%d+%.%d+%.%d+)(:%d+)?%f[%D]"
 local THROTTLE_WINDOW = 1.0
 local THROTTLE_MAX = 40
 local throttle = { t = 0, n = 0 }
+
+-- These are the user/system text families Roth Chat intentionally transforms.
+-- Monster/combat/loot payloads are left to Blizzard because they are either
+-- not user-authored or have specialized formatting/security paths.
 local FILTER_EVENTS = {
-  "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER", "CHAT_MSG_PARTY",
-  "CHAT_MSG_PARTY_LEADER", "CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER",
-  "CHAT_MSG_SAY", "CHAT_MSG_YELL", "CHAT_MSG_WHISPER",
-  "CHAT_MSG_BN_WHISPER", "CHAT_MSG_CHANNEL",
+  "CHAT_MSG_SAY",
+  "CHAT_MSG_YELL",
+  "CHAT_MSG_EMOTE",
+  "CHAT_MSG_TEXT_EMOTE",
+  "CHAT_MSG_WHISPER",
+  "CHAT_MSG_WHISPER_INFORM",
+  "CHAT_MSG_BN_WHISPER",
+  "CHAT_MSG_BN_WHISPER_INFORM",
+  "CHAT_MSG_GUILD",
+  "CHAT_MSG_OFFICER",
+  "CHAT_MSG_PARTY",
+  "CHAT_MSG_PARTY_LEADER",
+  "CHAT_MSG_RAID",
+  "CHAT_MSG_RAID_LEADER",
+  "CHAT_MSG_RAID_WARNING",
+  "CHAT_MSG_INSTANCE_CHAT",
+  "CHAT_MSG_INSTANCE_CHAT_LEADER",
+  "CHAT_MSG_CHANNEL",
+  "CHAT_MSG_COMMUNITIES_CHANNEL",
+  "CHAT_MSG_SYSTEM",
+  "CHAT_MSG_ACHIEVEMENT",
+  "CHAT_MSG_GUILD_ACHIEVEMENT",
 }
 
 local function UrlCopyEnabled()
   return RothChat and RothChat.IsModuleActive and RothChat:IsModuleActive("UrlCopy")
 end
 
-local function IsSafeChatString(v)
-  return type(v) == "string" and (not NS.CanAccessValue or NS.CanAccessValue(v))
+local function IsSafeChatString(value)
+  return type(value) == "string" and (not NS.CanAccessValue or NS.CanAccessValue(value))
 end
 
 local function AllowLinkify()
@@ -51,13 +72,13 @@ local function AllowLinkify()
   return throttle.n <= THROTTLE_MAX
 end
 
-local function HasUrlHints(msg)
-  if not IsSafeChatString(msg) or msg == "" then return false end
-  if msg:find("://", 1, true) then return true end
-  if msg:find("www.", 1, true) then return true end
-  if msg:find("discord", 1, true) then return true end
-  if msg:find("battle%.net") then return true end
-  if msg:find("%d+%.%d+%.%d+%.%d+") then return true end
+local function HasUrlHints(message)
+  if not IsSafeChatString(message) or message == "" then return false end
+  if message:find("://", 1, true) then return true end
+  if message:find("www.", 1, true) then return true end
+  if message:find("discord", 1, true) then return true end
+  if message:find("battle.net", 1, true) then return true end
+  if message:find("%d+%.%d+%.%d+%.%d+") then return true end
   return false
 end
 
@@ -65,37 +86,34 @@ local function CountPlain(text, needle)
   local count = 0
   local start = 1
   while true do
-    local pos = text:find(needle, start, true)
-    if not pos then return count end
+    local position = text:find(needle, start, true)
+    if not position then return count end
     count = count + 1
-    start = pos + 1
+    start = position + 1
   end
 end
 
-local function IsUnmatchedCloser(url, ch)
-  if ch == ")" then
+local function IsUnmatchedCloser(url, character)
+  if character == ")" then
     return CountPlain(url, ")") > CountPlain(url, "(")
-  elseif ch == "]" then
+  elseif character == "]" then
     return CountPlain(url, "]") > CountPlain(url, "[")
-  elseif ch == "}" then
+  elseif character == "}" then
     return CountPlain(url, "}") > CountPlain(url, "{")
   end
   return false
 end
 
-local function StripTrailingPunct(url)
-  local trail = ""
+local function StripTrailingPunctuation(url)
+  local trailing = ""
   while url ~= "" do
-    local ch = url:sub(-1)
-    local strip = ch:match("[%.%,%:%;%!%?]") ~= nil or IsUnmatchedCloser(url, ch)
-    if strip then
-      trail = ch .. trail
-      url = url:sub(1, -2)
-    else
-      break
-    end
+    local character = url:sub(-1)
+    local strip = character:match("[%.%,%:%;%!%?]") ~= nil or IsUnmatchedCloser(url, character)
+    if not strip then break end
+    trailing = character .. trailing
+    url = url:sub(1, -2)
   end
-  return url, trail
+  return url, trailing
 end
 
 local function MakeLink(url)
@@ -114,162 +132,152 @@ local function IsValidIPv4(ip)
 end
 
 local function FindNextIP(text, startIndex)
-  local s, e, ip, port = text:find(IP_PATTERN, startIndex)
-  while s do
-    if IsValidIPv4(ip) then
-      return s, e, ip, port
-    end
-    s, e, ip, port = text:find(IP_PATTERN, e + 1)
+  local startPos, endPos, ip, port = text:find(IP_PATTERN, startIndex)
+  while startPos do
+    if IsValidIPv4(ip) then return startPos, endPos, ip, port end
+    startPos, endPos, ip, port = text:find(IP_PATTERN, endPos + 1)
   end
   return nil
 end
 
 local function FindNextUrl(text, startIndex)
-  local bestS, bestE, bestUrl
+  local bestStart, bestEnd, bestUrl
 
-  local function Consider(s, e, url)
-    if not s then return end
-    if (not bestS) or (s < bestS) or (s == bestS and e > bestE) then
-      bestS, bestE, bestUrl = s, e, url
+  local function Consider(startPos, endPos, url)
+    if not startPos then return end
+    if not bestStart or startPos < bestStart or (startPos == bestStart and endPos > bestEnd) then
+      bestStart, bestEnd, bestUrl = startPos, endPos, url
     end
   end
 
-  local s, e = text:find(HTTP_PATTERN, startIndex)
-  if s then Consider(s, e, text:sub(s, e)) end
+  local startPos, endPos = text:find(HTTP_PATTERN, startIndex)
+  if startPos then Consider(startPos, endPos, text:sub(startPos, endPos)) end
 
-  s, e = text:find(WWW_PATTERN, startIndex)
-  if s then Consider(s, e, text:sub(s, e)) end
+  startPos, endPos = text:find(WWW_PATTERN, startIndex)
+  if startPos then Consider(startPos, endPos, text:sub(startPos, endPos)) end
 
-  s, e = text:find(DISCORD_PATTERN, startIndex)
-  if s then Consider(s, e, text:sub(s, e)) end
+  startPos, endPos = text:find(DISCORD_PATTERN, startIndex)
+  if startPos then Consider(startPos, endPos, text:sub(startPos, endPos)) end
 
-  s, e = text:find(DISCORD_INVITE_PATTERN, startIndex)
-  if s then Consider(s, e, text:sub(s, e)) end
+  startPos, endPos = text:find(DISCORD_INVITE_PATTERN, startIndex)
+  if startPos then Consider(startPos, endPos, text:sub(startPos, endPos)) end
 
-  s, e = text:find(BNET_PATTERN, startIndex)
-  if s then Consider(s, e, text:sub(s, e)) end
+  startPos, endPos = text:find(BNET_PATTERN, startIndex)
+  if startPos then Consider(startPos, endPos, text:sub(startPos, endPos)) end
 
-  local ipS, ipE, ip, port = FindNextIP(text, startIndex)
-  if ipS then Consider(ipS, ipE, ip .. (port or "")) end
+  local ipStart, ipEnd, ip, port = FindNextIP(text, startIndex)
+  if ipStart then Consider(ipStart, ipEnd, ip .. (port or "")) end
 
-  return bestS, bestE, bestUrl
+  return bestStart, bestEnd, bestUrl
 end
 
 local function LinkifySegment(text)
   if not IsSafeChatString(text) or text == "" then return text end
 
   local out = {}
-  local i = 1
-  local len = #text
+  local cursor = 1
+  local length = #text
 
-  while i <= len do
-    local s, e, url = FindNextUrl(text, i)
-    if not s then
-      out[#out + 1] = text:sub(i)
+  while cursor <= length do
+    local startPos, endPos, url = FindNextUrl(text, cursor)
+    if not startPos then
+      out[#out + 1] = text:sub(cursor)
       break
     end
 
-    if s > i then
-      out[#out + 1] = text:sub(i, s - 1)
-    end
+    if startPos > cursor then out[#out + 1] = text:sub(cursor, startPos - 1) end
 
-    local clean, trail = StripTrailingPunct(url)
+    local clean, trailing = StripTrailingPunctuation(url)
     if clean == "" then
-      out[#out + 1] = text:sub(s, e)
+      out[#out + 1] = text:sub(startPos, endPos)
     else
       out[#out + 1] = MakeLink(clean)
-      if trail ~= "" then
-        out[#out + 1] = trail
-      end
+      if trailing ~= "" then out[#out + 1] = trailing end
     end
 
-    i = e + 1
+    cursor = endPos + 1
   end
 
   return table.concat(out)
 end
 
-local function LinkifyMessage(msg)
-  if not IsSafeChatString(msg) or msg == "" then return msg end
-  if not msg:find("|H", 1, true) then
-    return LinkifySegment(msg)
-  end
+local function LinkifyMessage(message)
+  if not IsSafeChatString(message) or message == "" then return message end
+  if not message:find("|H", 1, true) then return LinkifySegment(message) end
 
   local out = {}
-  local i = 1
-  local len = #msg
+  local cursor = 1
+  local length = #message
 
-  while i <= len do
-    local s = msg:find("|H", i, true)
-    if not s then
-      out[#out + 1] = LinkifySegment(msg:sub(i))
+  while cursor <= length do
+    local linkStart = message:find("|H", cursor, true)
+    if not linkStart then
+      out[#out + 1] = LinkifySegment(message:sub(cursor))
       break
     end
 
-    if s > i then
-      out[#out + 1] = LinkifySegment(msg:sub(i, s - 1))
-    end
+    if linkStart > cursor then out[#out + 1] = LinkifySegment(message:sub(cursor, linkStart - 1)) end
 
-    local h1s, h1e = msg:find("|h", s + 2, true)
-    if not h1s then
-      out[#out + 1] = LinkifySegment(msg:sub(s))
+    local firstLabelStart, firstLabelEnd = message:find("|h", linkStart + 2, true)
+    if not firstLabelStart then
+      out[#out + 1] = LinkifySegment(message:sub(linkStart))
       break
     end
-    local h2s, h2e = msg:find("|h", h1e + 1, true)
-    if not h2s then
-      out[#out + 1] = LinkifySegment(msg:sub(s))
+    local secondLabelStart, secondLabelEnd = message:find("|h", firstLabelEnd + 1, true)
+    if not secondLabelStart then
+      out[#out + 1] = LinkifySegment(message:sub(linkStart))
       break
     end
 
-    out[#out + 1] = msg:sub(s, h2e)
-    i = h2e + 1
+    out[#out + 1] = message:sub(linkStart, secondLabelEnd)
+    cursor = secondLabelEnd + 1
   end
 
   return table.concat(out)
 end
 
 local function ShowPopup(url)
-  if not UrlCopyEnabled() then return end
-  if not IsSafeChatString(url) or url == "" then return end
+  if not UrlCopyEnabled() or not IsSafeChatString(url) or url == "" then return end
 
   local popupName = "RothChat_UrlCopyPopup"
-  local f = _G[popupName]
-  if not f then
-    f = CreateFrame("Frame", popupName, UIParent)
-    f:SetSize(400, 60)
-    f:SetPoint("CENTER")
-    f:SetFrameStrata("DIALOG")
-    f:EnableMouse(true)
+  local frame = _G[popupName]
+  if not frame then
+    frame = CreateFrame("Frame", popupName, UIParent)
+    frame:SetSize(400, 60)
+    frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
+    frame:EnableMouse(true)
+    NS.ApplyGlassLook(frame, 0.95)
 
-    NS.ApplyGlassLook(f, 0.95)
+    local editBox = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    editBox:SetPoint("LEFT", 10, 0)
+    editBox:SetPoint("RIGHT", -10, 0)
+    editBox:SetHeight(24)
+    editBox:SetAutoFocus(true)
+    frame.editBox = editBox
 
-    local eb = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-    eb:SetPoint("LEFT", 10, 0)
-    eb:SetPoint("RIGHT", -10, 0)
-    eb:SetHeight(24)
-    eb:SetAutoFocus(true)
-    f.editBox = eb
+    local label = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("BOTTOMLEFT", editBox, "TOPLEFT", 0, 2)
+    label:SetText("Press Ctrl+C to copy:")
 
-    local lbl = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetPoint("BOTTOMLEFT", eb, "TOPLEFT", 0, 2)
-    lbl:SetText("Press Ctrl+C to copy:")
+    editBox:SetScript("OnEscapePressed", function() frame:Hide() end)
+    editBox:SetScript("OnEnterPressed", function() frame:Hide() end)
 
-    eb:SetScript("OnEscapePressed", function() f:Hide() end)
-    eb:SetScript("OnEnterPressed", function() f:Hide() end)
-
-    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 0, 0)
   end
 
-  f.editBox:SetText(url)
-  f.editBox:HighlightText()
-  f:Show()
+  frame.editBox:SetText(url)
+  frame.editBox:HighlightText()
+  frame:Show()
 end
 
 local function RegisterLinkHandler()
   if M._linkHandlerRegistered then return true end
 
-  if _G.LinkUtil and type(_G.LinkUtil.IsLinkHandlerRegistered) == "function" and _G.LinkUtil.IsLinkHandlerRegistered(LINK_TYPE) then
+  if _G.LinkUtil and type(_G.LinkUtil.IsLinkHandlerRegistered) == "function"
+    and _G.LinkUtil.IsLinkHandlerRegistered(LINK_TYPE)
+  then
     M._linkHandlerRegistered = true
     return true
   end
@@ -277,9 +285,7 @@ local function RegisterLinkHandler()
   if _G.LinkUtil and type(_G.LinkUtil.RegisterLinkHandler) == "function" then
     _G.LinkUtil.RegisterLinkHandler(LINK_TYPE, function(link, text, linkData, contextData)
       local url = linkData and linkData.options or ""
-      if IsSafeChatString(url) and url ~= "" then
-        ShowPopup(url)
-      end
+      if IsSafeChatString(url) and url ~= "" then ShowPopup(url) end
       return _G.LinkProcessorResponse and _G.LinkProcessorResponse.Handled or nil
     end)
     M._linkHandlerRegistered = true
@@ -289,16 +295,13 @@ local function RegisterLinkHandler()
   return false
 end
 
-local function ChatFilter(self, event, msg, ...)
-  if not IsSafeChatString(msg) then return false end
-  if msg:find("|H" .. LINK_TYPE .. ":", 1, true) then return false end
-  if not HasUrlHints(msg) then return false end
-  if not AllowLinkify() then return false end
+local function ChatFilter(self, event, message, ...)
+  if not IsSafeChatString(message) then return false end
+  if message:find("|H" .. LINK_TYPE .. ":", 1, true) then return false end
+  if not HasUrlHints(message) or not AllowLinkify() then return false end
 
-  local newMsg = LinkifyMessage(msg)
-  if newMsg ~= msg then
-    return false, newMsg
-  end
+  local transformed = LinkifyMessage(message)
+  if transformed ~= message then return false, transformed end
   return false
 end
 
@@ -309,10 +312,7 @@ end
 
 function M:OnEnable(core)
   core:RegisterMessageFilters(self, FILTER_EVENTS, ChatFilter, 60)
-
-  if not self.hooked then
-    self.hooked = RegisterLinkHandler()
-  end
+  if not self.hooked then self.hooked = RegisterLinkHandler() end
 end
 
 function M:OnDisable(core)
