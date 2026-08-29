@@ -56,13 +56,14 @@ function NS.NormalizeHexColor(value, fallback)
   return fallback
 end
 
-function NS.FormatChatTimestamp(timestamp, colored, colorHex)
+function NS.FormatChatTimestamp(timestamp, colored, colorHex, formatCode)
   if not CanUse(timestamp) or type(timestamp) ~= "number" then return "" end
 
+  formatCode = type(formatCode) == "string" and formatCode or DEFAULT_TIMESTAMP_FORMAT
   local stamp = "[--:--]"
   local dateFn = _G.date
   if type(dateFn) == "function" then
-    local ok, formatted = pcall(dateFn, "[" .. DEFAULT_TIMESTAMP_FORMAT .. "]", timestamp)
+    local ok, formatted = pcall(dateFn, "[" .. formatCode .. "]", timestamp)
     if ok and type(formatted) == "string" then stamp = formatted end
   end
 
