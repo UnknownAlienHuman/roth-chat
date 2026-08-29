@@ -2,6 +2,31 @@
 
 All notable Roth Chat changes are recorded here.
 
+## Unreleased — 2026-08-29 audit pass
+
+### Structured chat text and persistence
+
+- Added `ChatText.lua` as the shared accessibility, durable-storage, timestamp and copy-normalization boundary.
+- Changed Restore to schema v2, storing timestamp metadata separately from timestamp-free durable message text.
+- Prevented duplicate timestamps in Restore-backed copy output.
+- Made `copyIncludeTimestamps=false` authoritative for Restore, message-buffer and rendered-font fallback sources.
+- Preserved legacy schema-v1 rows through lazy normalization without destructive SavedVariables migration.
+- Reconstructed replay timestamps only when the Timestamps module is currently active.
+- Preserved the previous second-resolution copy/export timestamp while keeping live display timestamps at minute resolution.
+- Replaced session-only account-name, BNet and censored-message handles before SavedVariables retention.
+
+### Verification and research
+
+- Added shared chat-text and timestamp integration contract tests.
+- Expanded Restore tests for schema v2, legacy rows, durable sanitation, replay with timestamps enabled/disabled and temporary-frame exclusion.
+- Added the existing Restore contract to the validation workflow.
+- Added `workflow_dispatch` and audit-branch validation routing for exact-head checks.
+- Documented pinned Chattynator and Prat implementation traces, licensing boundaries and explicit adoption/rejection decisions.
+
+### Remaining gate
+
+- Rate-limited hot-path diagnostics and live Retail validation remain pending; no release is claimed from this audit branch.
+
 ## 1.1.1 — 2026-08-28
 
 ### Runtime lifecycle
