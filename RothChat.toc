@@ -33,7 +33,6 @@ Modules\Colors.lua
 Modules\Resize.lua
 # Modules\History.lua -- legacy, disabled (Restore handles persistence)
 Modules\Ticker.lua
-Modules\TickerLifecycle.lua
 Modules\Timestamps.lua
 Modules\Cleaner.lua
 Modules\Alerts.lua
