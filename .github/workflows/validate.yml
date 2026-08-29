@@ -42,6 +42,9 @@ jobs:
       - name: Verify durable chat-text contract
         run: lua5.4 tests/chat_text_spec.lua
 
+      - name: Verify timestamp integration contract
+        run: lua5.4 tests/timestamps_spec.lua
+
       - name: Verify URL transformation contract
         run: lua5.4 tests/url_copy_spec.lua
 
