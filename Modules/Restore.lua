@@ -1,9 +1,15 @@
 -- RothChat - Restore (persistent scrollback per permanent chat window)
 -- Also owns RothChat's chat-text fade settings while the module is active.
+--
+-- Store schema v2 keeps timestamp metadata separate from the durable message
+-- text. This prevents duplicate timestamps in copy/export and lets replay obey
+-- the current Timestamps module setting.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
 if not RothChat then return end
+
+local STORE_VERSION = 2
 
 local M = {
   name = "Restore",
@@ -31,8 +37,11 @@ end
 
 local function EnsureDB(core)
   local db = core.db
-  if type(db.restore) ~= "table" then db.restore = { version = 1, frames = {} } end
+  if type(db.restore) ~= "table" then
+    db.restore = { version = STORE_VERSION, frames = {} }
+  end
   if type(db.restore.frames) ~= "table" then db.restore.frames = {} end
+  db.restore.version = STORE_VERSION
   return db.restore
 end
 
@@ -60,39 +69,58 @@ local function GetTimeNow()
   return (GetServerTime and GetServerTime()) or time()
 end
 
-local function FormatTS(t)
-  local ok, s = pcall(date, "%H:%M:%S", t)
-  if ok and type(s) == "string" then return s end
-  return "--:--:--"
-end
-
 local function IsPersistentChatFrame(chatFrame)
   if not chatFrame or chatFrame.isTemporary then return false end
   local idx = NS.GetChatFrameIndex and NS.GetChatFrameIndex(chatFrame)
   return type(idx) == "number" and idx >= 1
 end
 
+local function GetEntryBaseText(entry)
+  if type(entry) ~= "table" then return "" end
+
+  local text = NS.SanitizeDurableChatText(entry[2])
+  if text == "" then return "" end
+
+  -- v1 stored already rendered text, including Roth's colored timestamp.
+  -- v2 stores timestamp-free durable text and marks the entry in slot 6.
+  if entry[6] ~= STORE_VERSION then
+    text = NS.StripRothTimestampPrefix(text)
+  end
+  return text
+end
+
 local function BuildExport(entries, maxLines, includeTimestamps)
   local n = #entries
   if n <= 0 then return "" end
+
   maxLines = ClampInt(maxLines, 1, 10000, 500)
   local start = math.max(1, n - maxLines + 1)
   local out = {}
+
   for i = start, n do
-    local e = entries[i]
-    if type(e) == "table" then
-      local t = e[1]
-      local msg = e[2]
-      if type(msg) == "string" and msg ~= "" then
-        if includeTimestamps and type(t) == "number" then
-          out[#out + 1] = string.format("[%s] %s", FormatTS(t), msg)
-        else
-          out[#out + 1] = msg
-        end
+    local entry = entries[i]
+    local text = GetEntryBaseText(entry)
+    if text ~= "" then
+      local timestamp = type(entry[1]) == "number" and entry[1] or nil
+      if includeTimestamps and timestamp then
+        text = NS.FormatChatTimestamp(timestamp, false) .. text
       end
+      out[#out + 1] = text
     end
   end
+
   return table.concat(out, "\n")
+end
+
+local function BuildReplayText(core, entry)
+  local text = GetEntryBaseText(entry)
+  if text == "" then return "" end
+
+  local timestamp = type(entry[1]) == "number" and entry[1] or nil
+  if timestamp and core:IsModuleActive("Timestamps") then
+    return NS.FormatChatTimestamp(timestamp, true, core:Get("timestampColor")) .. text
+  end
+  return text
 end
 
 function M:Init(core)
@@ -124,8 +152,7 @@ end
 
 local function SnapshotFadeSettings(cf)
   if not cf or fadeSnapshots[cf] then return end
-  -- Do not use `value and call() or nil` here: false is a meaningful fading
-  -- state and must survive the snapshot/restore round trip.
+  -- False is a meaningful fading state and must survive the snapshot.
   fadeSnapshots[cf] = {
     fading = ReadOptionalFrameValue(cf, "GetFading"),
     timeVisible = ReadOptionalFrameValue(cf, "GetTimeVisible"),
@@ -178,7 +205,10 @@ local function OnAddMessage(frame, text, r, g, b)
   if NS.CanAccessValue and not NS.CanAccessValue(text) then return end
   if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return end
-  text = NS.SafeTrunc(text, 4000)
+
+  local durableText = NS.SanitizeDurableChatText(NS.SafeTrunc(text, 4000))
+  local baseText = NS.StripRothTimestampPrefix(durableText)
+  if baseText == "" then return end
 
   local idx = NS.GetChatFrameIndex(frame)
   if not idx then return end
@@ -188,14 +218,17 @@ local function OnAddMessage(frame, text, r, g, b)
   local now = GetTimeNow()
   entries[#entries + 1] = {
     now,
-    text,
+    baseText,
     SanitizeColor(r),
     SanitizeColor(g),
     SanitizeColor(b),
+    STORE_VERSION,
   }
   PruneWithSlack(entries, maxLines)
 
-  M.core:Emit("CHAT_FEED", frame, text, r, g, b, now)
+  -- Keep the internal feed compatible with existing displayed-message
+  -- consumers. Persistence itself retains only the sanitized base text.
+  M.core:Emit("CHAT_FEED", frame, durableText, r, g, b, now)
 end
 
 local function RegisterLifecycleListeners(core)
@@ -246,15 +279,13 @@ local function RestoreChatFrame(self, cf, idx, maxLines)
 
   NS.SafeCall("RothChat:Restore:" .. tostring(idx), function()
     for i = start, n do
-      local e = entries[i]
-      if type(e) == "table" then
-        local msg = e[2]
-        if type(msg) == "string" and msg ~= "" then
-          local r = type(e[3]) == "number" and e[3] or 1
-          local g = type(e[4]) == "number" and e[4] or 1
-          local b = type(e[5]) == "number" and e[5] or 1
-          cf:AddMessage(msg, r, g, b)
-        end
+      local entry = entries[i]
+      local message = BuildReplayText(self.core, entry)
+      if message ~= "" then
+        local r = type(entry[3]) == "number" and entry[3] or 1
+        local g = type(entry[4]) == "number" and entry[4] or 1
+        local b = type(entry[5]) == "number" and entry[5] or 1
+        cf:AddMessage(message, r, g, b)
       end
     end
     if cf.ScrollToBottom then cf:ScrollToBottom() end
