@@ -16,6 +16,8 @@ Util.lua
 Platform.lua
 ChatText.lua
 Core.lua
+CoreDispatch.lua
+CoreListeners.lua
 ChatLifecycle.lua
 
 # Modules
