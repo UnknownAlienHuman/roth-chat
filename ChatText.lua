@@ -1,8 +1,8 @@
 -- RothChat - shared chat-text boundaries
 --
--- This file keeps persistence/copy formatting separate from Blizzard's live
--- chat tuple. It contains only clean-room transformations over already
--- accessible text; it is not a declassification or a replacement chat model.
+-- Keeps persistence/copy formatting separate from Blizzard's live secure chat
+-- tuple. All functions operate only on values that already passed the current
+-- accessibility gate; none is a declassification or a replacement renderer.
 
 local ADDON_NAME, NS = ...
 NS = NS or {}
@@ -74,6 +74,49 @@ function NS.FormatChatTimestamp(timestamp, colored, colorHex, formatCode)
   return stamp .. " "
 end
 
+function NS.GetNativeChatTimestampFormat()
+  local util = _G.ChatFrameUtil
+  if util and type(util.GetTimestampFormat) == "function" then
+    local ok, format = pcall(util.GetTimestampFormat)
+    if ok and type(format) == "string" and format ~= "" and format ~= "none" then
+      return format
+    end
+  end
+
+  local settings = _G.Settings
+  if settings and type(settings.GetValue) == "function" then
+    local ok, format = pcall(settings.GetValue, "showTimestamps")
+    if ok and type(format) == "string" and format ~= "" and format ~= "none" then
+      return format
+    end
+  end
+
+  return nil
+end
+
+function NS.HasNativeChatTimestamps()
+  return NS.GetNativeChatTimestampFormat() ~= nil
+end
+
+function NS.FormatNativeChatTimestamp(timestamp, format)
+  if not CanUse(timestamp) or type(timestamp) ~= "number" then return "" end
+  format = type(format) == "string" and format or NS.GetNativeChatTimestampFormat()
+  if type(format) ~= "string" or format == "" or format == "none" then return "" end
+
+  local timeUtil = _G.TimeUtil
+  if timeUtil and type(timeUtil.BetterDate) == "function" then
+    local ok, value = pcall(timeUtil.BetterDate, format, timestamp)
+    if ok and type(value) == "string" then return value end
+  end
+
+  if type(_G.date) == "function" then
+    local ok, value = pcall(_G.date, format, timestamp)
+    if ok and type(value) == "string" then return value end
+  end
+
+  return ""
+end
+
 function NS.StripRothTimestampPrefix(text)
   if not CanUse(text) then return "" end
   if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
@@ -91,25 +134,97 @@ function NS.HasRothTimestampPrefix(text)
   return NS.StripRothTimestampPrefix(text) ~= text
 end
 
+local function StripExactPrefix(text, prefix)
+  if type(prefix) ~= "string" or prefix == "" then return text, false end
+  if text:sub(1, #prefix) == prefix then
+    return text:sub(#prefix + 1), true
+  end
+  return text, false
+end
+
+local function StripCommonPlainTimestampPrefix(text)
+  local patterns = {
+    "^%[%d%d?:%d%d:%d%d%s+[AaPp][Mm]%]%s*",
+    "^%[%d%d?:%d%d%s+[AaPp][Mm]%]%s*",
+    "^%[%d%d:%d%d:%d%d%]%s*",
+    "^%[%d%d:%d%d%]%s*",
+  }
+
+  for i = 1, #patterns do
+    local stripped, count = text:gsub(patterns[i], "", 1)
+    if count > 0 then return stripped end
+  end
+  return text
+end
+
+-- Remove exactly one display-owned prefix. The exact native prefix is tried at
+-- timestamp +/- one second because the AddMessage observer runs after Blizzard
+-- captured msgTime; a second boundary between both calls must not retain it.
+function NS.StripDisplayTimestampPrefix(text, timestamp, allowGeneric)
+  if not CanUse(text) then return "" end
+  if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
+  if text == "" then return "" end
+
+  local stripped = NS.StripRothTimestampPrefix(text)
+  if stripped ~= text then return stripped end
+
+  local format = NS.GetNativeChatTimestampFormat()
+  if format and type(timestamp) == "number" then
+    for delta = -1, 1 do
+      local prefix = NS.FormatNativeChatTimestamp(timestamp + delta, format)
+      local candidate, matched = StripExactPrefix(text, prefix)
+      if matched then return candidate end
+    end
+  end
+
+  if allowGeneric then
+    return StripCommonPlainTimestampPrefix(text)
+  end
+  return text
+end
+
+local function FlattenSessionLinks(text)
+  local flattenTypes = {
+    "BNplayer",
+    "BNplayerCommunity",
+    "playerCommunity",
+    "discorduser",
+    "discorduserCommunity",
+    "playerGM",
+    "channel",
+  }
+
+  for i = 1, #flattenTypes do
+    local linkType = flattenTypes[i]
+    text = text:gsub("|H" .. linkType .. ":[^|]*|h(.-)|h", "%1")
+  end
+
+  -- Player links with lineID/chatType/chatTarget contain session routing data.
+  -- Preserve the stable character target and visible label only.
+  text = text:gsub("|Hplayer:([^:|]+):[^|]*|h(.-)|h", "|Hplayer:%1|h%2|h")
+  return text
+end
+
 function NS.SanitizeDurableChatText(text)
   if not CanUse(text) then return "" end
   if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
   if text == "" then return "" end
 
-  -- Persist only stable, already displayed text. Account-name tokens and
-  -- censored-message callbacks are session/context handles, not durable data.
+  -- Account-name tokens and censored-message callbacks are session/context
+  -- handles, not durable content. Ordinary item/spell/achievement links remain.
   text = text:gsub("|[Kk].-|[Kk]", "???")
   text = text:gsub("|[Ww].-|[Ww]", "???")
-  text = text:gsub("|Hreportcensoredmessage:.-|h.-|h", CENSORED_PLACEHOLDER)
-  text = text:gsub("|Hcensoredmessage:.-|h.-|h", CENSORED_PLACEHOLDER)
-  text = text:gsub("|H[Bb][Nn]player:.-|h(.-)|h", "%1")
+  text = text:gsub("|Hreportcensoredmessage:[^|]*|h.-|h", CENSORED_PLACEHOLDER)
+  text = text:gsub("|Hcensoredmessage[^:|]*:[^|]*|h.-|h", CENSORED_PLACEHOLDER)
+  text = FlattenSessionLinks(text)
 
   return text
 end
 
 local function StripPlainTimestampPrefixes(text)
-  text = text:gsub("^%[%d%d:%d%d:%d%d%]%s*", "", 1)
-  text = text:gsub("^%[%d%d:%d%d%]%s*", "", 1)
+  text = StripCommonPlainTimestampPrefix(text)
+  text = text:gsub("\n%[%d%d?:%d%d:%d%d%s+[AaPp][Mm]%]%s*", "\n")
+  text = text:gsub("\n%[%d%d?:%d%d%s+[AaPp][Mm]%]%s*", "\n")
   text = text:gsub("\n%[%d%d:%d%d:%d%d%]%s*", "\n")
   text = text:gsub("\n%[%d%d:%d%d%]%s*", "\n")
   return text
