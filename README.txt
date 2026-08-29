@@ -28,6 +28,13 @@ RUNTIME LIFECYCLE
 - Dynamic chat windows receive Controls, Style, Resize, Restore and CopyOverlay lifecycle handling.
 - Temporary whisper frames are excluded from permanent Restore identity.
 
+STRUCTURED RESTORE
+- Restore schema v2 stores timestamp metadata separately from durable text.
+- Replay adds one timestamp only when the Timestamps module is active.
+- Copy/export respects the timestamp option for Restore and frame fallbacks.
+- Legacy schema-v1 rows remain readable without an eager database rewrite.
+- Session-only account-name, BNet and censored-message handles are replaced before persistence.
+
 USAGE
 - Install the RothChat folder under World of Warcraft/_retail_/Interface/AddOns/.
 - Enable the addon and reload the UI.
@@ -37,6 +44,9 @@ PERSISTENCE OWNERSHIP
 Restore.lua is the active scrollback owner. History.lua is legacy and intentionally not loaded.
 
 VALIDATION
-The repository workflow parses every Lua file, validates active TOC paths and runs chat-filter, module-lifecycle, URL and Cleaner localization contracts. In-game validation is still required for combat, forced chat restrictions, whisper/reply, temporary windows, dock transitions, module toggles, reload and logout/login persistence.
+The repository workflow parses every Lua file, validates active TOC paths and runs chat-filter, module-lifecycle, durable-text, timestamp, URL, Cleaner and Restore contracts. In-game validation is still required for combat, forced chat restrictions, whisper/reply, temporary windows, dock transitions, module toggles, reload and logout/login persistence.
+
+THIRD-PARTY NOTICES
+Roth Chat contains material from two distinct Glass projects. LS: Glass material is Apache-2.0; original Glass material is MIT. Keep ThirdParty/LS_GLASS_LICENSE.txt, ThirdParty/GLASS_LICENSE.txt and ThirdParty/ATTRIBUTIONS.md in every package that contains the affected assets/helpers.
 
 See README.md, AGENT_GUIDE.md, ARCHITECTURE.md and MIGRATION_12_1.md for engineering details.
