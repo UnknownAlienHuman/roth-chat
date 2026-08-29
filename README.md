@@ -88,11 +88,16 @@ Automated validation does not replace the in-game smoke matrix. Combat, forced c
 - [`CODE_INDEX.md`](CODE_INDEX.md) — subsystem map
 - [`CHANGELOG.md`](CHANGELOG.md) — release history
 - [`MIGRATION_12_1.md`](MIGRATION_12_1.md) — source evidence and runtime matrix
-- [`RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md`](RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md) — pinned Chattynator/Prat implementation review and adoption decisions
+- [`RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md`](RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md) — pinned Chattynator, Prat, original Glass and LS: Glass implementation review
 - [`TODO.md`](TODO.md) — remaining release gates only
 
-## Dependencies and license
+## Dependencies and licenses
 
 The addon vendors LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 under `ThirdParty/`. Their notices must remain in the repository.
 
-Roth Chat is licensed under the [MIT License](LICENSE.md). The visual glass aesthetic and bundled Glass-derived textures retain the original MIT notice in [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+Roth Chat's own code is licensed under the [MIT License](LICENSE.md). Third-party Glass material has two distinct provenances:
+
+- exact LS: Glass assets and modified helper adaptations are Apache-2.0; see [`ThirdParty/LS_GLASS_LICENSE.txt`](ThirdParty/LS_GLASS_LICENSE.txt);
+- exact legacy original Glass assets are MIT; see [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+
+Exact source commits, paths and Git blob hashes are recorded in [`ThirdParty/ATTRIBUTIONS.md`](ThirdParty/ATTRIBUTIONS.md). Do not conflate the two Glass projects or remove either applicable notice from distributed packages.
