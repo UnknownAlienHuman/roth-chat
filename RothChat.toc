@@ -14,6 +14,7 @@ ThirdParty\LibSharedMedia-3.0\lib.xml
 
 Util.lua
 Platform.lua
+VisualPrimitives.lua
 ChatText.lua
 Core.lua
 CoreDispatch.lua
@@ -23,6 +24,7 @@ ChatLifecycle.lua
 # Modules
 Modules\Dock.lua
 Modules\Style.lua
+Modules\StyleOwnership.lua
 Modules\Controls.lua
 Modules\ControlsOwnership.lua
 Modules\ChatBar.lua
