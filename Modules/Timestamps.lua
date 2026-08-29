@@ -1,5 +1,5 @@
 -- RothChat - Timestamps module
--- Goal: Add stylish, unobtrusive timestamps to chat messages.
+-- Adds an unobtrusive timestamp to accessible chat text.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -10,8 +10,6 @@ local M = {
   description = "Adds time to chat messages.",
 }
 
-local TIMESTAMP_FORMAT = "[%H:%M]"
-local DEFAULT_COLOR = "999999" -- Grey
 local EVENTS = {
   "CHAT_MSG_SAY", "CHAT_MSG_YELL", "CHAT_MSG_EMOTE", "CHAT_MSG_TEXT_EMOTE",
   "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_BN_WHISPER_INFORM",
@@ -23,39 +21,16 @@ local EVENTS = {
 }
 
 local cachedSecond = -1
-local cachedStamp = ""
 local cachedColor = ""
 local cachedPrefix = ""
 
-local function NormalizeHexColor(hex)
-  if type(hex) ~= "string" then
-    return DEFAULT_COLOR
-  end
-  hex = hex:gsub("^#", ""):gsub("^|c%x%x", ""):sub(1, 6):upper()
-  if hex:match("^[0-9A-F]+$") and #hex == 6 then
-    return hex
-  end
-  return DEFAULT_COLOR
-end
-
 local function GetTimestampPrefix()
   local now = time()
-  if now ~= cachedSecond then
+  local color = NS.NormalizeHexColor(RothChat and RothChat:Get("timestampColor"), "999999")
+  if now ~= cachedSecond or color ~= cachedColor then
     cachedSecond = now
-    local ok, stamp = pcall(date, TIMESTAMP_FORMAT, now)
-    if ok and type(stamp) == "string" then
-      cachedStamp = stamp
-    else
-      cachedStamp = "[--:--]"
-    end
-    -- Force prefix refresh after second boundary.
-    cachedColor = ""
-  end
-
-  local color = NormalizeHexColor(RothChat and RothChat:Get("timestampColor"))
-  if color ~= cachedColor then
     cachedColor = color
-    cachedPrefix = "|cff" .. color .. cachedStamp .. "|r "
+    cachedPrefix = NS.FormatChatTimestamp(now, true, color)
   end
   return cachedPrefix
 end
@@ -63,11 +38,7 @@ end
 local function AddTimestamp(self, event, msg, ...)
   if NS.CanAccessValue and not NS.CanAccessValue(msg) then return false end
   if type(msg) ~= "string" then return false end
-
-  -- Skip if a timestamp prefix was already injected.
-  if msg:find("^|cff%x%x%x%x%x%x%[%d%d:%d%d%]|r%s") then
-    return false
-  end
+  if NS.HasRothTimestampPrefix(msg) then return false end
 
   local prefix = GetTimestampPrefix()
   if prefix == "" then return false end
@@ -85,7 +56,6 @@ end
 
 function M:OnDisable(core)
   cachedSecond = -1
-  cachedStamp = ""
   cachedColor = ""
   cachedPrefix = ""
 end
