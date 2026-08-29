@@ -31,43 +31,7 @@ local function EnsureUISpecialFrame(name)
   table.insert(UISpecialFrames, name)
 end
 
-local function SafeStripHyperlinks(text)
-  if type(text) ~= "string" then return "" end
-
-  if C_StringUtil and type(C_StringUtil.StripHyperlinks) == "function" then
-    local ok, stripped = pcall(C_StringUtil.StripHyperlinks, text, false, true, true, false, false)
-    if ok and type(stripped) == "string" then return stripped end
-  end
-
-  if type(_G.StripHyperlinks) == "function" then
-    local ok, stripped = pcall(_G.StripHyperlinks, text)
-    if ok and type(stripped) == "string" then return stripped end
-  end
-
-  return text
-end
-
-local function NormalizeCopyText(text)
-  if NS.CanAccessValue and not NS.CanAccessValue(text) then return "" end
-  if type(text) ~= "string" then text = NS.SafeToString(text) end
-  if text == "" then return "" end
-
-  -- Hide literal pipe escapes while WoW formatting tokens are removed.
-  text = text:gsub("||", "\1")
-  text = text:gsub("|[cC]%x%x%x%x%x%x%x%x", "")
-  text = text:gsub("|[rR]", "")
-  text = text:gsub("|[tT].-|[tT]", "")
-  text = text:gsub("|[aA].-|[aA]", "")
-  text = text:gsub("|[kK].-|[kK]", "")
-  text = text:gsub("|[hH].-|[hH](.-)|[hH]", "%1")
-  text = text:gsub("|[nN]", "\n")
-  text = SafeStripHyperlinks(text)
-  text = text:gsub("\1", "|")
-
-  return strtrim(text)
-end
-
-local function CollectFromFontStrings(chatFrame)
+local function CollectFromFontStrings(chatFrame, includeTimestamps)
   if not chatFrame or type(chatFrame.GetRegions) ~= "function" then return "" end
 
   local out = {}
@@ -75,7 +39,7 @@ local function CollectFromFontStrings(chatFrame)
     if region and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText then
       local ok, text = pcall(region.GetText, region)
       if ok then
-        local normalized = NormalizeCopyText(text)
+        local normalized = NS.NormalizeCopyText(text, includeTimestamps)
         if normalized ~= "" then out[#out + 1] = normalized end
       end
     end
@@ -235,7 +199,7 @@ end
 local function GetCopyText(core, chatFrame, maxLines)
   local includeTimestamps = core:Get("copyIncludeTimestamps")
   local function NormalizeCandidate(text)
-    text = NormalizeCopyText(text)
+    text = NS.NormalizeCopyText(text, includeTimestamps)
     if text ~= "" then return text end
     return nil
   end
@@ -256,8 +220,8 @@ local function GetCopyText(core, chatFrame, maxLines)
     end
   end
 
-  local fallback = NormalizeCandidate(CollectFromFontStrings(chatFrame))
-  return fallback or EMPTY_COPY_PLACEHOLDER
+  local fallback = CollectFromFontStrings(chatFrame, includeTimestamps)
+  return fallback ~= "" and fallback or EMPTY_COPY_PLACEHOLDER
 end
 
 local function ToggleOverlay(core, chatFrame)
