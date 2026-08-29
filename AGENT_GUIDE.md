@@ -11,19 +11,30 @@ Before changing chat or restriction-sensitive code, read the corresponding mater
 
 ## Start here
 
-Read [`RothChat.toc`](RothChat.toc), then [`Util.lua`](Util.lua) and [`Core.lua`](Core.lua).
+Read [`RothChat.toc`](RothChat.toc), then [`Util.lua`](Util.lua), [`ChatText.lua`](ChatText.lua) and [`Core.lua`](Core.lua).
 
 The active load order is:
 
 1. bundled libraries;
 2. `Util.lua`;
-3. `Core.lua`;
-4. Dock, Style, Controls, ChatBar, Restore, CopyOverlay, UrlCopy, Colors, Resize, Ticker, Timestamps, Cleaner, Alerts and Sticky;
-5. root `Options.lua`.
+3. `ChatText.lua`;
+4. `Core.lua`;
+5. Dock, Style, Controls, ChatBar, Restore, CopyOverlay, UrlCopy, Colors, Resize, Ticker, Timestamps, Cleaner, Alerts and Sticky;
+6. root `Options.lua`.
 
 `Modules/History.lua` is deliberately excluded. `Modules/Restore.lua` is the only active persistence owner.
 
 ## Runtime ownership
+
+`Util.lua` owns generic safety, accessibility checks, restriction checks, scheduling, fading, chat-frame discovery and visual helpers.
+
+`ChatText.lua` owns the boundary between accessible live/displayed chat and addon-generated durable/copy text:
+
+- timestamp formatting and Roth timestamp recognition;
+- stable color normalization;
+- replacement of session-only account-name, BNet and censored-message handles;
+- removal of WoW display markup for copy surfaces;
+- optional removal of leading rendered timestamps.
 
 `Core.lua` owns:
 
@@ -37,7 +48,7 @@ The active load order is:
 - Blizzard chat-frame lifecycle routing;
 - combat-deferred work with preserved argument arity.
 
-`Util.lua` owns shared safety, accessibility checks, restriction checks, scheduling, fading, chat-frame discovery, text collection and visual helpers. Modules own one feature each and communicate through core APIs instead of adding parallel global hooks.
+Modules own one feature each and communicate through core/shared APIs instead of adding parallel global hooks.
 
 ## Module lifecycle contract
 
@@ -89,19 +100,36 @@ Do not return `false, newArg1` directly from an independently registered Blizzar
 
 The executable contract is [`tests/core_chat_filter_spec.lua`](tests/core_chat_filter_spec.lua).
 
-## SavedVariables and persistence
+## SavedVariables and durable chat text
 
 `RothChatDB.profile.__version` records the addon version. A migration may initialize missing fields, normalize obsolete values or retire legacy state, but it must not overwrite explicit feature or module choices.
 
 Module toggles are stored as `module_<ModuleName>_enabled`. Defaults are written only when a key is absent. Raising `RothChat.version` must not re-enable modules the user disabled.
 
-Permanent chat-window indices may be used for Restore buckets. Temporary whisper frames are reused by Blizzard and are not durable identities; never store their displayed text under a permanent frame-index bucket.
+Restore schema v2 rows are compact arrays:
+
+```text
+{ timestamp, timestampFreeDurableText, r, g, b, 2 }
+```
+
+Rules:
+
+- Persist only text that already crossed the accessibility gate and was displayed.
+- Pass stored text through `NS.SanitizeDurableChatText` before retention.
+- Do not store Roth's rendered timestamp in the message string; timestamp is metadata.
+- Replay reconstructs a colored timestamp only when Timestamps is currently active.
+- Copy/export reconstructs at most one plain timestamp according to `copyIncludeTimestamps`.
+- Legacy v1 rows may be normalized lazily; do not perform an unbounded destructive migration at login.
+- Permanent chat-window indices may be used for Restore buckets.
+- Temporary whisper frames are reused by Blizzard and are not durable identities.
+
+Contracts are in [`tests/chat_text_spec.lua`](tests/chat_text_spec.lua), [`tests/timestamps_spec.lua`](tests/timestamps_spec.lua) and [`tests/restore_spec.lua`](tests/restore_spec.lua).
 
 ## Restriction and taint boundaries
 
 - Gate secret-capable values with `NS.CanAccessValue` before comparison, type-dependent formatting, concatenation, serialization, animation or retention.
 - `issecretvalue` and `canaccessvalue` are not interchangeable; accessibility is the operational gate.
-- Preserve `NS.IsChatMessagingRestricted`, `NS.SafeToString`, `NS.SafeTrunc` and `NS.SafeCall` boundaries.
+- Preserve `NS.IsChatMessagingRestricted`, `NS.SafeToString`, `NS.SafeTrunc`, `NS.SafeCall` and the `ChatText.lua` boundaries.
 - Do not replace Blizzard chat globals or `ChatFrameUtil` functions.
 - Use `ChatFrameUtil.AddMessageEventFilter` through `NS.AddMessageEventFilter`; keep the legacy global only as a feature-detected fallback.
 - Do not retain raw chat-event payloads in SavedVariables.
@@ -123,13 +151,27 @@ Permanent chat-window indices may be used for Restore buckets. Temporary whisper
 - Do not add permanent frame scans or per-message frame/closure creation.
 - Keep one core `AddMessage` hook per chat frame.
 - Keep ticker queues bounded and O(1) at the head.
+- Keep Restore buckets bounded and avoid whole-database migrations in a hot/login path.
 - Register and unregister listeners, filters and hooks through owner-aware core APIs.
 - Queue chat lifecycle/layout refreshes rather than repeating overlapping `FCF_*` work immediately.
 - If combat interrupts an animation or layout mutation, cancel the active driver and queue at most one deferred continuation.
+- Hot-path diagnostics must be rate-limited; unbounded error reporting remains an open audit item.
+
+## External implementation evidence
+
+Read [`RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md`](RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md) before borrowing a chat-architecture pattern.
+
+Key constraints:
+
+- Chattynator's current source repository is not publicly accessible; the reviewed fork snapshot is non-authoritative and All Rights Reserved.
+- Prat is GPLv3 and its reviewed current message-handler copy still exposes the maintenance risk of fixed-width Blizzard internals.
+- Adopt only independently reasoned concepts. Do not copy code, handlers, assets or license-incompatible implementation.
+- Roth Chat remains a narrow adapter over Blizzard chat rather than a full replacement renderer.
 
 ## Change routing
 
-- Shared safety, scheduling and frame helpers: `Util.lua`
+- Generic safety, scheduling and frame helpers: `Util.lua`
+- Durable/copy chat-text transformations: `ChatText.lua`
 - Core bus, module lifecycle, filters and SavedVariables: `Core.lua`
 - Appearance and geometry: `Modules/Style.lua`, `Colors.lua`, `Resize.lua`, `Dock.lua`
 - Interaction and copying: `Controls.lua`, `ChatBar.lua`, `CopyOverlay.lua`, `UrlCopy.lua`
@@ -144,16 +186,20 @@ Automated validation in `.github/workflows/validate.yml` must pass:
 - parse every `.lua` file;
 - run the complete chat-filter contract;
 - run module activation/cleanup/late-login contracts;
+- run shared durable-text and timestamp integration contracts;
 - run URL transformation and accessibility contracts;
 - run Cleaner localization/restoration contracts;
+- run Restore schema/replay/fade/temporary-frame contracts;
 - verify TOC interface, version, author and active load paths.
 
 Then perform the in-game matrix on current Retail:
 
 - fresh login, `/reload`, logout/login;
 - module disable/re-enable before and after login;
+- schema-v1 SavedVariables upgrade and schema-v2 round trip;
 - say, party, raid, instance, guild, whisper, reply, Battle.net whisper and numbered channels;
 - messages with and without timestamps/URLs;
+- copy with timestamps enabled and disabled from Restore and frame fallbacks;
 - forced chat restrictions and real restricted-content transitions;
 - combat entry/exit during resize, dock/style refresh and settings changes;
 - create, dock, select, undock, reuse and close chat windows;
