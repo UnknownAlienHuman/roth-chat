@@ -165,6 +165,8 @@ Key constraints:
 
 - Chattynator's current source repository is not publicly accessible; the reviewed fork snapshot is non-authoritative and All Rights Reserved.
 - Prat is GPLv3 and its reviewed current message-handler copy still exposes the maintenance risk of fixed-width Blizzard internals.
+- LS: Glass is Apache-2.0 but retired for Midnight; its reviewed TOC targets `110207` and its full renderer is historical evidence, not a current contract.
+- Original Glass is MIT and abandoned; it is provenance/historical evidence only.
 - Adopt only independently reasoned concepts. Do not copy code, handlers, assets or license-incompatible implementation.
 - Roth Chat remains a narrow adapter over Blizzard chat rather than a full replacement renderer.
 
@@ -211,4 +213,10 @@ Static validation does not constitute a live-client pass. Record runtime results
 
 ## Third-party boundary
 
-Do not edit or remove bundled license notices. Glass-derived textures retain their original MIT attribution under `ThirdParty/GLASS_LICENSE.txt`.
+Do not edit, merge or remove bundled license notices without re-auditing exact file provenance.
+
+- LS: Glass-derived assets and modified helper adaptations are Apache-2.0; see `ThirdParty/LS_GLASS_LICENSE.txt`.
+- Original Glass-derived assets are MIT; see `ThirdParty/GLASS_LICENSE.txt`.
+- Exact source commits, paths and Git blob hashes are recorded in `ThirdParty/ATTRIBUTIONS.md`.
+- The two Glass projects are distinct. Never claim that the MIT notice covers LS: Glass material.
+- Every release package containing the affected assets or helper adaptations must include both applicable licenses and the attribution file.
