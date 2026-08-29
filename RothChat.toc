@@ -13,13 +13,16 @@ ThirdParty\CallbackHandler-1.0\CallbackHandler-1.0.lua
 ThirdParty\LibSharedMedia-3.0\lib.xml
 
 Util.lua
+Platform.lua
 ChatText.lua
 Core.lua
+ChatLifecycle.lua
 
 # Modules
 Modules\Dock.lua
 Modules\Style.lua
 Modules\Controls.lua
+Modules\ControlsOwnership.lua
 Modules\ChatBar.lua
 Modules\Restore.lua
 Modules\CopyOverlay.lua
@@ -28,6 +31,7 @@ Modules\Colors.lua
 Modules\Resize.lua
 # Modules\History.lua -- legacy, disabled (Restore handles persistence)
 Modules\Ticker.lua
+Modules\TickerLifecycle.lua
 Modules\Timestamps.lua
 Modules\Cleaner.lua
 Modules\Alerts.lua
