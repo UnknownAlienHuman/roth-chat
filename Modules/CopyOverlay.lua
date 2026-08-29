@@ -1,5 +1,5 @@
 -- RothChat - CopyOverlay module
--- Double-click a chat frame or its hotspot to open a read-only copy surface.
+-- Double-click an active chat frame or its hotspot to open a read-only copy surface.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -10,12 +10,16 @@ local M = {
   description = "Double-click to toggle a copyable overlay over the chat.",
 }
 
-local overlays = {}
+local overlays = setmetatable({}, { __mode = "k" })
 local EMPTY_COPY_PLACEHOLDER = "(No copyable chat lines available.)"
 local copyActive = false
 
 local function IsEnabled(core)
   return copyActive and core and core:IsModuleActive("CopyOverlay")
+end
+
+local function IsActiveChatFrame(chatFrame)
+  return chatFrame and (not NS.IsActiveChatFrame or NS.IsActiveChatFrame(chatFrame))
 end
 
 local function SanitizeName(value)
@@ -93,6 +97,7 @@ local function ApplyOverlayTextStyle(core, overlay)
 end
 
 local function BuildOverlay(core, chatFrame)
+  if not IsActiveChatFrame(chatFrame) then return nil end
   if overlays[chatFrame] then return overlays[chatFrame] end
 
   local baseName = (chatFrame.GetName and chatFrame:GetName())
@@ -153,9 +158,12 @@ local function BuildOverlay(core, chatFrame)
   end)
 
   overlay:SetScript("OnShow", function(self)
-    closer:Show()
+    if not IsEnabled(core) or not IsActiveChatFrame(chatFrame) then
+      self:Hide()
+      return
+    end
 
-    -- Snapshot before listeners or fades can change the frame.
+    closer:Show()
     self._prevChatAlpha = chatFrame:GetAlpha()
     core:Emit("COPY_OVERLAY_VISIBILITY", chatFrame, true)
     NS.FadeTo(chatFrame, 0, 0.15)
@@ -174,8 +182,6 @@ local function BuildOverlay(core, chatFrame)
     closer:Hide()
     NS.CancelScheduled(self.__focusScheduleKey)
 
-    -- Restore first, then let Controls/Ticker establish the authoritative final
-    -- alpha for the current hover/immersion state.
     local previousAlpha = self._prevChatAlpha
     if type(previousAlpha) ~= "number" then previousAlpha = 1 end
     NS.FadeTo(chatFrame, previousAlpha, 0.15)
@@ -227,9 +233,10 @@ end
 local function ToggleOverlay(core, chatFrame)
   if not IsEnabled(core) or not chatFrame then return end
   chatFrame = (NS.ResolveActiveDockChatFrame and NS.ResolveActiveDockChatFrame(chatFrame)) or chatFrame
-  if not chatFrame then return end
+  if not IsActiveChatFrame(chatFrame) then return end
 
   local overlay = BuildOverlay(core, chatFrame)
+  if not overlay then return end
   if overlay:IsShown() then
     overlay:Hide()
     return
@@ -250,7 +257,7 @@ local function HookDoubleClick(core, chatFrame, frame)
 
   local threshold = 0.35
   frame:HookScript("OnMouseUp", function(self, button)
-    if not IsEnabled(core) then return end
+    if not IsEnabled(core) or not IsActiveChatFrame(chatFrame) then return end
     if button ~= "LeftButton" or IsAltKeyDown() or IsControlKeyDown() or IsShiftKeyDown() then return end
 
     local now = GetTime()
@@ -264,7 +271,7 @@ local function HookDoubleClick(core, chatFrame, frame)
 end
 
 local function ApplyToChatFrame(core, chatFrame)
-  if not chatFrame then return end
+  if not IsActiveChatFrame(chatFrame) then return end
   BuildOverlay(core, chatFrame)
   HookDoubleClick(core, chatFrame, chatFrame)
 
@@ -275,7 +282,9 @@ local function ApplyToChatFrame(core, chatFrame)
 end
 
 local function ApplyAll(core)
-  for _, chatFrame in ipairs(NS.GetChatFrames()) do ApplyToChatFrame(core, chatFrame) end
+  for _, chatFrame in ipairs(NS.GetActiveChatFrames and NS.GetActiveChatFrames() or {}) do
+    ApplyToChatFrame(core, chatFrame)
+  end
 end
 
 function M:Init(core)
@@ -296,7 +305,7 @@ function M:OnEnable(core)
   end
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame)
-    if IsEnabled(core2) and chatFrame then ApplyToChatFrame(core2, chatFrame) end
+    if IsEnabled(core2) then ApplyToChatFrame(core2, chatFrame) end
   end, self)
 
   core:On("CHAT_FRAME_CLOSED", function(_, _, chatFrame)
