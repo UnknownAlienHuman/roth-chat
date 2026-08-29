@@ -6,7 +6,9 @@ on:
       - main
       - "update/**"
       - "fix/**"
+      - "audit/**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,11 +39,17 @@ jobs:
       - name: Verify module lifecycle contract
         run: lua5.4 tests/core_module_lifecycle_spec.lua
 
+      - name: Verify durable chat-text contract
+        run: lua5.4 tests/chat_text_spec.lua
+
       - name: Verify URL transformation contract
         run: lua5.4 tests/url_copy_spec.lua
 
       - name: Verify Cleaner localization contract
         run: lua5.4 tests/cleaner_spec.lua
+
+      - name: Verify Restore ownership and schema contract
+        run: lua5.4 tests/restore_spec.lua
 
       - name: Verify TOC metadata and load paths
         run: |
