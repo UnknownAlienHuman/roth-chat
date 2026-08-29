@@ -24,9 +24,10 @@ _G.time = function()
   return 12345
 end
 _G.date = function(format, timestamp)
-  assert(format == "[%H:%M]")
   assert(timestamp == 12345)
-  return "[12:34]"
+  if format == "[%H:%M]" then return "[12:34]" end
+  if format == "[%H:%M:%S]" then return "[12:34:56]" end
+  error("unexpected date format: " .. tostring(format))
 end
 _G.NUM_CHAT_WINDOWS = 1
 
@@ -142,7 +143,7 @@ assert(not entry[2]:find("BNplayer", 1, true))
 assert(not entry[2]:find("|K", 1, true))
 
 assert(core:GetRestoreText(frame, 500, false) == "Visible ???")
-assert(core:GetRestoreText(frame, 500, true) == "[12:34] Visible ???")
+assert(core:GetRestoreText(frame, 500, true) == "[12:34:56] Visible ???")
 
 module:OnLogin(core)
 assert(#replayed == 1)
@@ -160,7 +161,7 @@ bucket.entries = {
   { 12345, "|cff8E8E8E[12:34]|r legacy", 1, 1, 1 },
 }
 assert(core:GetRestoreText(frame, 500, false) == "legacy")
-assert(core:GetRestoreText(frame, 500, true) == "[12:34] legacy")
+assert(core:GetRestoreText(frame, 500, true) == "[12:34:56] legacy")
 
 runtimeActive = false
 module:OnDisable(core)
