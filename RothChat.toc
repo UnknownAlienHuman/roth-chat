@@ -13,6 +13,7 @@ ThirdParty\CallbackHandler-1.0\CallbackHandler-1.0.lua
 ThirdParty\LibSharedMedia-3.0\lib.xml
 
 Util.lua
+ChatText.lua
 Core.lua
 
 # Modules
