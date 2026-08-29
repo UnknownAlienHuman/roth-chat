@@ -19,6 +19,7 @@ Roth Chat uses one centralized message-filter dispatcher rather than stacking in
 - A no-op module filter returns only `false`, leaving Blizzard's secure tuple untouched.
 - A text transformation replaces only visible `arg1` while preserving every remaining field, arity and `nil` position.
 - Chat text is gated through current value accessibility before comparison, formatting, copying, animation or persistence.
+- `ChatText.lua` is the shared boundary between live displayed chat and durable/copy text; it removes session-only BNet, account-name and censored-message handles before SavedVariables retention.
 - Filter callbacks are optional and stateless because Blizzard may skip addon callbacks for inaccessible values.
 
 The verified 12.1 source discrepancy and live-client matrix are recorded in [`MIGRATION_12_1.md`](MIGRATION_12_1.md).
@@ -33,6 +34,15 @@ Version `1.1.1` separates configured module enablement from actual runtime activ
 - Controls, ChatBar, Style, Resize, Restore and CopyOverlay attach to chat frames through the shared lifecycle router.
 - The ticker keeps a bounded queue and accepts only messages that arrive while its primary chat surface is hidden; messages already visible in normal chat are not replayed later.
 - Restore persists permanent chat-window identities only. Reused temporary whisper frames are excluded from durable scrollback.
+
+## Structured Restore text
+
+Restore schema v2 stores timestamp metadata separately from durable message text.
+
+- Replay reconstructs the timestamp only when the Timestamps module is currently active.
+- Copy/export adds at most one timestamp and respects `copyIncludeTimestamps` for both Restore and frame fallbacks.
+- Existing schema-v1 rows remain readable and are normalized lazily; no destructive migration is required.
+- Normal item/spell links remain available for replay, while unstable account/BNet/censored handles are replaced before persistence.
 
 ## Installation and usage
 
@@ -63,8 +73,10 @@ The repository validation workflow performs:
 - Lua syntax parsing for addon, vendored library and test files;
 - a complete chat-filter tuple contract test;
 - module activation, owner-cleanup and late-login lifecycle tests;
+- shared durable-text and timestamp integration contracts;
 - URL transformation tests, including balanced punctuation and inaccessible values;
 - Cleaner localization and restoration tests;
+- Restore schema, replay, fade ownership and temporary-frame exclusion tests;
 - TOC metadata and active load-path validation.
 
 Automated validation does not replace the in-game smoke matrix. Combat, forced chat restrictions, whisper/reply, temporary windows, dock transitions, module toggles, reload and logout/login persistence still require current Retail runtime testing before a packaged release.
@@ -76,10 +88,16 @@ Automated validation does not replace the in-game smoke matrix. Combat, forced c
 - [`CODE_INDEX.md`](CODE_INDEX.md) — subsystem map
 - [`CHANGELOG.md`](CHANGELOG.md) — release history
 - [`MIGRATION_12_1.md`](MIGRATION_12_1.md) — source evidence and runtime matrix
+- [`RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md`](RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md) — pinned Chattynator, Prat, original Glass and LS: Glass implementation review
 - [`TODO.md`](TODO.md) — remaining release gates only
 
-## Dependencies and license
+## Dependencies and licenses
 
 The addon vendors LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 under `ThirdParty/`. Their notices must remain in the repository.
 
-Roth Chat is licensed under the [MIT License](LICENSE.md). The visual glass aesthetic and bundled Glass-derived textures retain the original MIT notice in [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+Roth Chat's own code is licensed under the [MIT License](LICENSE.md). Third-party Glass material has two distinct provenances:
+
+- exact LS: Glass assets and modified helper adaptations are Apache-2.0; see [`ThirdParty/LS_GLASS_LICENSE.txt`](ThirdParty/LS_GLASS_LICENSE.txt);
+- exact legacy original Glass assets are MIT; see [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+
+Exact source commits, paths and Git blob hashes are recorded in [`ThirdParty/ATTRIBUTIONS.md`](ThirdParty/ATTRIBUTIONS.md). Do not conflate the two Glass projects or remove either applicable notice from distributed packages.

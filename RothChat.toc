@@ -13,12 +13,20 @@ ThirdParty\CallbackHandler-1.0\CallbackHandler-1.0.lua
 ThirdParty\LibSharedMedia-3.0\lib.xml
 
 Util.lua
+Platform.lua
+VisualPrimitives.lua
+ChatText.lua
 Core.lua
+CoreDispatch.lua
+CoreListeners.lua
+ChatLifecycle.lua
 
 # Modules
 Modules\Dock.lua
 Modules\Style.lua
+Modules\StyleOwnership.lua
 Modules\Controls.lua
+Modules\ControlsOwnership.lua
 Modules\ChatBar.lua
 Modules\Restore.lua
 Modules\CopyOverlay.lua

@@ -6,12 +6,15 @@
 RothChat.toc
   -> bundled libraries
   -> Util.lua
+  -> ChatText.lua
   -> Core.lua
   -> feature modules
   -> Options.lua
 ```
 
-`Util.lua` provides shared accessibility/restriction checks, bounded scheduling, fading, chat-frame discovery, text collection and visual helpers.
+`Util.lua` provides generic accessibility/restriction checks, bounded scheduling, fading, chat-frame discovery, text collection and visual helpers.
+
+`ChatText.lua` provides clean-room transformations over already accessible text: timestamp formatting, durable sanitation and copy normalization. It does not read raw chat events, declassify inaccessible values or replace Blizzard's message model.
 
 `Core.lua` is the ownership boundary for SavedVariables, module lifecycle, the internal bus, Blizzard chat-frame lifecycle hooks, message-event filters and the consolidated `AddMessage` post-hook.
 
@@ -26,7 +29,7 @@ Feature modules remain independent:
 
 ## Startup and module state
 
-1. Blizzard loads libraries, Util, Core and module definitions in TOC order.
+1. Blizzard loads libraries, Util, ChatText, Core and module definitions in TOC order.
 2. Modules register through `RothChat:RegisterModule` without activating themselves.
 3. `ADDON_LOADED` initializes and migrates `RothChatDB`, preserving explicit user choices.
 4. Core initializes and activates configured modules. Successful `OnEnable` transitions a module to runtime-active state.
@@ -44,9 +47,9 @@ configured enabled
   -> OnEnable per activation
   -> active
   -> optional one-time OnLogin
-  -> OnDisable
+  -> inactive before OnDisable callbacks
   -> core owner cleanup
-  -> inactive, still initialized
+  -> initialized but inactive
 ```
 
 Core cleanup removes owner bus listeners, message filters and `AddMessage` callbacks even if a module's own disable path is incomplete. Permanent hooks remain installed but must check runtime activation before acting.
@@ -74,12 +77,61 @@ Each discovered chat frame receives one secure `AddMessage` post-hook. Core fans
 
 Primary consumers:
 
-- Restore retains bounded accessible text for permanent chat-window identities;
+- Restore crosses the displayed-text boundary, sanitizes durable text and retains bounded rows for permanent chat-window identities;
 - Ticker accepts only messages arriving while its primary chat frame is hidden;
 - Alerts starts inactive dock-tab flash after display;
 - Controls animates bottom-of-chat smooth scrolling only while active.
 
 The feed is optional. No consumer may depend on guaranteed delivery or evaluate inaccessible text before its gate.
+
+## Structured Restore model
+
+Restore schema v2 separates message time from durable text:
+
+```text
+entry[1] = timestamp
+entry[2] = timestamp-free durable displayed text
+entry[3] = red
+entry[4] = green
+entry[5] = blue
+entry[6] = schema marker 2
+```
+
+### Ingest
+
+```text
+ChatFrame:AddMessage post-hook
+  -> accessibility gate in core
+  -> permanent-frame identity check
+  -> NS.SafeTrunc
+  -> NS.SanitizeDurableChatText
+  -> remove Roth rendered timestamp
+  -> append bounded schema-v2 row
+```
+
+Session-only account-name tokens, BNet links and censored-message callbacks do not cross into SavedVariables. Normal stable display text and ordinary item/spell links remain available for replay.
+
+### Replay
+
+```text
+schema-v2 row
+  -> timestamp-free base text
+  -> if Timestamps active: reconstruct colored [HH:MM]
+  -> ChatFrame:AddMessage under __rothRestoring guard
+```
+
+Legacy schema-v1 rows are normalized lazily by stripping Roth's rendered timestamp. There is no unbounded login-time rewrite.
+
+### Copy/export
+
+```text
+Restore row or frame fallback
+  -> optional one plain timestamp
+  -> NS.NormalizeCopyText
+  -> copy EditBox
+```
+
+Restore preserves the prior second-resolution export timestamp. The live Timestamps module remains minute-resolution. `copyIncludeTimestamps=false` is applied to Restore, message-buffer and rendered-font fallback sources.
 
 ## Chat-frame lifecycle
 
@@ -117,16 +169,24 @@ Restore stores bounded entries only for permanent indexed chat windows. It snaps
 
 ## Scheduling and performance
 
-The shared scheduler coalesces keyed deferred jobs. The fade updater and scheduler remove their `OnUpdate` scripts when idle. Ticker head operations use indexed queue bookkeeping. Combat-interrupted Resize, Dock and Style work cancels or deduplicates its active driver and defers at most one continuation.
+The shared scheduler coalesces keyed deferred jobs. The fade updater and scheduler remove their `OnUpdate` scripts when idle. Ticker head operations use indexed queue bookkeeping. Restore performs no eager whole-database conversion. Combat-interrupted Resize, Dock and Style work cancels or deduplicates its active driver and defers at most one continuation.
 
 Controls owns `OnMouseWheel` while active rather than stacking another `HookScript` path over Blizzard scrolling. When inactive, its wrapper delegates to the captured original script.
+
+Rate-limited hot-path diagnostics remain a tracked follow-up: current callback reporters can still produce repeated error output if a per-message defect survives validation.
 
 ## Localization
 
 Cleaner snapshots Blizzard's current localized format strings. Normal mode removes brackets around the sender placeholder without replacing localized channel labels. Compact language-neutral tags are applied only when `cleanerShorten` is enabled. Disable restores a snapshot only when no later writer changed the same global.
 
+## External architecture boundary
+
+The pinned review in `RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md` records why Roth Chat adopts structured timestamp/durable-text ideas but rejects full frame replacement, copied Blizzard handlers, command-history ownership and third-party source transplantation.
+
+Roth Chat remains a narrow adapter over Blizzard chat. Custom renderer pools and processed-message caches are not justified while Blizzard continues to own rendering.
+
 ## Restriction boundary
 
-`canaccessvalue` compatibility is the operational gate. Chat callbacks may be skipped when values are inaccessible. No filter, ticker, copy, alert or restore path may depend on guaranteed callback delivery. Raw event payloads must not become durable feature state; only already displayed, accessible text may cross into bounded Restore/copy surfaces.
+`canaccessvalue` compatibility is the operational gate. Chat callbacks may be skipped when values are inaccessible. No filter, ticker, copy, alert or restore path may depend on guaranteed callback delivery. Raw event payloads must not become durable feature state; only already displayed, accessible and sanitized text may cross into bounded Restore/copy surfaces.
 
 Automated contracts live under `tests/` and `.github/workflows/validate.yml`. Runtime gates are recorded in `MIGRATION_12_1.md`.

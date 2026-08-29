@@ -1,5 +1,5 @@
 -- RothChat - CopyOverlay module
--- Double-click a chat frame or its hotspot to open a read-only copy surface.
+-- Double-click an active chat frame or its hotspot to open a read-only copy surface.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -10,12 +10,16 @@ local M = {
   description = "Double-click to toggle a copyable overlay over the chat.",
 }
 
-local overlays = {}
+local overlays = setmetatable({}, { __mode = "k" })
 local EMPTY_COPY_PLACEHOLDER = "(No copyable chat lines available.)"
 local copyActive = false
 
 local function IsEnabled(core)
   return copyActive and core and core:IsModuleActive("CopyOverlay")
+end
+
+local function IsActiveChatFrame(chatFrame)
+  return chatFrame and (not NS.IsActiveChatFrame or NS.IsActiveChatFrame(chatFrame))
 end
 
 local function SanitizeName(value)
@@ -31,43 +35,7 @@ local function EnsureUISpecialFrame(name)
   table.insert(UISpecialFrames, name)
 end
 
-local function SafeStripHyperlinks(text)
-  if type(text) ~= "string" then return "" end
-
-  if C_StringUtil and type(C_StringUtil.StripHyperlinks) == "function" then
-    local ok, stripped = pcall(C_StringUtil.StripHyperlinks, text, false, true, true, false, false)
-    if ok and type(stripped) == "string" then return stripped end
-  end
-
-  if type(_G.StripHyperlinks) == "function" then
-    local ok, stripped = pcall(_G.StripHyperlinks, text)
-    if ok and type(stripped) == "string" then return stripped end
-  end
-
-  return text
-end
-
-local function NormalizeCopyText(text)
-  if NS.CanAccessValue and not NS.CanAccessValue(text) then return "" end
-  if type(text) ~= "string" then text = NS.SafeToString(text) end
-  if text == "" then return "" end
-
-  -- Hide literal pipe escapes while WoW formatting tokens are removed.
-  text = text:gsub("||", "\1")
-  text = text:gsub("|[cC]%x%x%x%x%x%x%x%x", "")
-  text = text:gsub("|[rR]", "")
-  text = text:gsub("|[tT].-|[tT]", "")
-  text = text:gsub("|[aA].-|[aA]", "")
-  text = text:gsub("|[kK].-|[kK]", "")
-  text = text:gsub("|[hH].-|[hH](.-)|[hH]", "%1")
-  text = text:gsub("|[nN]", "\n")
-  text = SafeStripHyperlinks(text)
-  text = text:gsub("\1", "|")
-
-  return strtrim(text)
-end
-
-local function CollectFromFontStrings(chatFrame)
+local function CollectFromFontStrings(chatFrame, includeTimestamps)
   if not chatFrame or type(chatFrame.GetRegions) ~= "function" then return "" end
 
   local out = {}
@@ -75,7 +43,7 @@ local function CollectFromFontStrings(chatFrame)
     if region and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText then
       local ok, text = pcall(region.GetText, region)
       if ok then
-        local normalized = NormalizeCopyText(text)
+        local normalized = NS.NormalizeCopyText(text, includeTimestamps)
         if normalized ~= "" then out[#out + 1] = normalized end
       end
     end
@@ -129,6 +97,7 @@ local function ApplyOverlayTextStyle(core, overlay)
 end
 
 local function BuildOverlay(core, chatFrame)
+  if not IsActiveChatFrame(chatFrame) then return nil end
   if overlays[chatFrame] then return overlays[chatFrame] end
 
   local baseName = (chatFrame.GetName and chatFrame:GetName())
@@ -189,9 +158,12 @@ local function BuildOverlay(core, chatFrame)
   end)
 
   overlay:SetScript("OnShow", function(self)
-    closer:Show()
+    if not IsEnabled(core) or not IsActiveChatFrame(chatFrame) then
+      self:Hide()
+      return
+    end
 
-    -- Snapshot before listeners or fades can change the frame.
+    closer:Show()
     self._prevChatAlpha = chatFrame:GetAlpha()
     core:Emit("COPY_OVERLAY_VISIBILITY", chatFrame, true)
     NS.FadeTo(chatFrame, 0, 0.15)
@@ -210,8 +182,6 @@ local function BuildOverlay(core, chatFrame)
     closer:Hide()
     NS.CancelScheduled(self.__focusScheduleKey)
 
-    -- Restore first, then let Controls/Ticker establish the authoritative final
-    -- alpha for the current hover/immersion state.
     local previousAlpha = self._prevChatAlpha
     if type(previousAlpha) ~= "number" then previousAlpha = 1 end
     NS.FadeTo(chatFrame, previousAlpha, 0.15)
@@ -235,7 +205,7 @@ end
 local function GetCopyText(core, chatFrame, maxLines)
   local includeTimestamps = core:Get("copyIncludeTimestamps")
   local function NormalizeCandidate(text)
-    text = NormalizeCopyText(text)
+    text = NS.NormalizeCopyText(text, includeTimestamps)
     if text ~= "" then return text end
     return nil
   end
@@ -256,16 +226,17 @@ local function GetCopyText(core, chatFrame, maxLines)
     end
   end
 
-  local fallback = NormalizeCandidate(CollectFromFontStrings(chatFrame))
-  return fallback or EMPTY_COPY_PLACEHOLDER
+  local fallback = CollectFromFontStrings(chatFrame, includeTimestamps)
+  return fallback ~= "" and fallback or EMPTY_COPY_PLACEHOLDER
 end
 
 local function ToggleOverlay(core, chatFrame)
   if not IsEnabled(core) or not chatFrame then return end
   chatFrame = (NS.ResolveActiveDockChatFrame and NS.ResolveActiveDockChatFrame(chatFrame)) or chatFrame
-  if not chatFrame then return end
+  if not IsActiveChatFrame(chatFrame) then return end
 
   local overlay = BuildOverlay(core, chatFrame)
+  if not overlay then return end
   if overlay:IsShown() then
     overlay:Hide()
     return
@@ -286,7 +257,7 @@ local function HookDoubleClick(core, chatFrame, frame)
 
   local threshold = 0.35
   frame:HookScript("OnMouseUp", function(self, button)
-    if not IsEnabled(core) then return end
+    if not IsEnabled(core) or not IsActiveChatFrame(chatFrame) then return end
     if button ~= "LeftButton" or IsAltKeyDown() or IsControlKeyDown() or IsShiftKeyDown() then return end
 
     local now = GetTime()
@@ -300,7 +271,7 @@ local function HookDoubleClick(core, chatFrame, frame)
 end
 
 local function ApplyToChatFrame(core, chatFrame)
-  if not chatFrame then return end
+  if not IsActiveChatFrame(chatFrame) then return end
   BuildOverlay(core, chatFrame)
   HookDoubleClick(core, chatFrame, chatFrame)
 
@@ -311,7 +282,9 @@ local function ApplyToChatFrame(core, chatFrame)
 end
 
 local function ApplyAll(core)
-  for _, chatFrame in ipairs(NS.GetChatFrames()) do ApplyToChatFrame(core, chatFrame) end
+  for _, chatFrame in ipairs(NS.GetActiveChatFrames and NS.GetActiveChatFrames() or {}) do
+    ApplyToChatFrame(core, chatFrame)
+  end
 end
 
 function M:Init(core)
@@ -332,7 +305,7 @@ function M:OnEnable(core)
   end
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame)
-    if IsEnabled(core2) and chatFrame then ApplyToChatFrame(core2, chatFrame) end
+    if IsEnabled(core2) then ApplyToChatFrame(core2, chatFrame) end
   end, self)
 
   core:On("CHAT_FRAME_CLOSED", function(_, _, chatFrame)
