@@ -1,0 +1,1 @@
+/mnt/data/CHAT_ADDON_ARCHITECTURE_AUDIT.md
