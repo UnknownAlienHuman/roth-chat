@@ -20,39 +20,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Lua
+      - name: Install Lua runtimes
         run: |
           sudo apt-get update
-          sudo apt-get install -y lua5.4
+          sudo apt-get install -y lua5.1 lua5.4
 
-      - name: Parse all Lua files
+      - name: Parse all Lua files with Lua 5.1 and 5.4
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r -d '' file; do
-            luac5.4 -p "$file"
-          done < <(find . -type f -name '*.lua' -not -path './.git/*' -print0)
+          for compiler in luac5.1 luac5.4; do
+            while IFS= read -r -d '' file; do
+              "$compiler" -p "$file"
+            done < <(find . -type f -name '*.lua' -not -path './.git/*' -print0)
+          done
 
-      - name: Verify chat filter contract
-        run: lua5.4 tests/core_chat_filter_spec.lua
+      - name: Run contract suite with Lua 5.1 and 5.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            tests/core_chat_filter_spec.lua
+            tests/core_module_lifecycle_spec.lua
+            tests/core_dispatch_mutation_spec.lua
+            tests/platform_spec.lua
+            tests/chat_lifecycle_spec.lua
+            tests/chat_text_spec.lua
+            tests/timestamps_spec.lua
+            tests/url_copy_spec.lua
+            tests/cleaner_spec.lua
+            tests/restore_spec.lua
+          )
 
-      - name: Verify module lifecycle contract
-        run: lua5.4 tests/core_module_lifecycle_spec.lua
-
-      - name: Verify durable chat-text contract
-        run: lua5.4 tests/chat_text_spec.lua
-
-      - name: Verify timestamp integration contract
-        run: lua5.4 tests/timestamps_spec.lua
-
-      - name: Verify URL transformation contract
-        run: lua5.4 tests/url_copy_spec.lua
-
-      - name: Verify Cleaner localization contract
-        run: lua5.4 tests/cleaner_spec.lua
-
-      - name: Verify Restore ownership and schema contract
-        run: lua5.4 tests/restore_spec.lua
+          for runtime in lua5.1 lua5.4; do
+            for test_file in "${tests[@]}"; do
+              if [[ "$runtime" == "lua5.1" ]]; then
+                "$runtime" -e 'table.unpack = unpack' "$test_file"
+              else
+                "$runtime" "$test_file"
+              fi
+            done
+          done
 
       - name: Verify TOC metadata and load paths
         run: |
