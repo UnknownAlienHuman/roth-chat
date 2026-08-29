@@ -164,8 +164,10 @@ assert(entry[2] == "|Hplayer:Tester|h[Tester]|h ???")
 assert(entry[3] == 0.1 and entry[4] == 0.2 and entry[5] == 0.3)
 assert(entry[6] == 2)
 
-assert(core:GetRestoreText(frame, 500, false) == "[Tester] ???")
-assert(core:GetRestoreText(frame, 500, true) == "[12:34:56] [Tester] ???")
+-- Restore export owns timestamp inclusion but preserves stable ordinary links;
+-- CopyOverlay flattens those links later in its copy-only normalization step.
+assert(core:GetRestoreText(frame, 500, false) == "|Hplayer:Tester|h[Tester]|h ???")
+assert(core:GetRestoreText(frame, 500, true) == "[12:34:56] |Hplayer:Tester|h[Tester]|h ???")
 
 messageCount = 0
 module:OnLogin(core)
