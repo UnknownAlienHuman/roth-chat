@@ -10,6 +10,10 @@ local errorReporting = false
 local errorSeen = {}
 local errorSeenCount = 0
 
+local function PackValues(...)
+  return { n = select("#", ...), ... }
+end
+
 local function GetNow()
   if type(_G.GetTime) == "function" then
     local ok, value = pcall(_G.GetTime)
@@ -22,7 +26,7 @@ local function GetNow()
   return 0
 end
 
-local function ErrorHandler(err)
+local function FormatError(err)
   local text = tostring(err)
   if type(_G.debugstack) == "function" then
     local ok, stack = pcall(_G.debugstack, 2, 25, 25)
@@ -61,15 +65,17 @@ function NS.ReportError(label, err)
   return true
 end
 
--- Override Util's reporter with a recursion-safe, duplicate-bounded boundary.
+-- Lua 5.1 xpcall does not portably forward extra arguments. Use pcall's
+-- vararg contract and preserve nil/trailing return positions explicitly.
 function NS.SafeCall(label, fn, ...)
   if type(fn) ~= "function" then return true end
-  local results = { xpcall(fn, ErrorHandler, ...) }
+  local results = PackValues(pcall(fn, ...))
   if not results[1] then
-    NS.ReportError(label, results[2])
-    return false, results[2]
+    local errorText = FormatError(results[2])
+    NS.ReportError(label, errorText)
+    return false, errorText
   end
-  return true, unpack(results, 2)
+  return true, unpack(results, 2, results.n)
 end
 
 local function AddUniqueFrame(out, seen, frame)
