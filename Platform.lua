@@ -37,6 +37,10 @@ local function FormatError(err)
   return text
 end
 
+function NS.IsReportingError()
+  return errorReporting
+end
+
 function NS.ReportError(label, err)
   if errorReporting then return false end
 
@@ -122,19 +126,28 @@ function NS.GetMaxPermanentChatWindows()
   return 10
 end
 
+local function AddActivePermanentFallback(out, seen)
+  local maxWindows = NS.GetMaxPermanentChatWindows()
+  for index = 1, maxWindows do
+    local frame = _G["ChatFrame" .. index]
+    if NS.IsActiveChatFrame(frame) then AddUniqueFrame(out, seen, frame) end
+  end
+end
+
 function NS.GetActiveChatFrames()
   local out, seen = {}, {}
+  local iterated = false
 
   if type(_G.FCF_IterateActiveChatWindows) == "function" then
-    pcall(_G.FCF_IterateActiveChatWindows, function(frame)
+    local ok = pcall(_G.FCF_IterateActiveChatWindows, function(frame)
+      iterated = true
       AddUniqueFrame(out, seen, frame)
     end)
-  else
-    local maxWindows = NS.GetMaxPermanentChatWindows()
-    for index = 1, maxWindows do
-      local frame = _G["ChatFrame" .. index]
-      if NS.IsActiveChatFrame(frame) then AddUniqueFrame(out, seen, frame) end
-    end
+    if not ok then iterated = false end
+  end
+
+  if not iterated then
+    AddActivePermanentFallback(out, seen)
   end
 
   -- Blizzard's active-window iterator covers only permanent slots. Temporary
