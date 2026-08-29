@@ -50,6 +50,9 @@ jobs:
             tests/url_copy_spec.lua
             tests/cleaner_spec.lua
             tests/restore_spec.lua
+            tests/ticker_spec.lua
+            tests/dock_spec.lua
+            tests/resize_spec.lua
           )
 
           for runtime in lua5.1 lua5.4; do
