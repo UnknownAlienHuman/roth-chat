@@ -1,132 +1,80 @@
 # Roth Chat architecture
 
-## Layers
+## Runtime owners
 
-```text
-RothChat.toc
-  -> bundled libraries
-  -> Util.lua
-  -> Core.lua
-  -> feature modules
-  -> Options.lua
-```
+Roth Chat is an adapter around Blizzard's chat system. The client owns chat event production, message formatting and routing, rendered history, and `ScrollingMessageFrame` behavior. Roth Chat adds module lifecycle, presentation, controls, limited transformations, and bounded durable restore for permanent windows.
 
-`Util.lua` provides shared accessibility/restriction checks, bounded scheduling, fading, chat-frame discovery, text collection and visual helpers.
+| File | Owns |
+|---|---|
+| `Util.lua` | Ordinary-value access helpers, safe numbers/text, keyed scheduling and cancellation, fade drivers, bounded data helpers. |
+| `Platform.lua` | Current-client diagnostics, frame/API adapters, frame discovery and identity, native chat-history collection, and restriction queries. |
+| `VisualPrimitives.lua` | Applied visual decoration: glass gradients, backdrops, borders, highlights, sizing, and cleanup. |
+| `ChatText.lua` | Accessible-text timestamp, durable-storage, and copy transformations. It does not declassify inaccessible content. |
+| `Core.lua` | SavedVariables/configuration, module registration and lifecycle, feature presets, and keyed combat deferral. |
+| `CoreListeners.lua` | Mutation-safe internal event bus and owner cleanup. |
+| `CoreDispatch.lua` | Sole owner of message-event filters and displayed-message `AddMessage` observers. |
+| `ChatLifecycle.lua` | Coalesced chat-frame lifecycle router around native frame events and stable `FCF_*` post-hooks. |
+| `Options.lua` | Blizzard Settings categories, controls, module toggles, and configuration UI. |
+| `Modules/*.lua` | Independent feature behavior registered through Core and shared adapters. |
 
-`Core.lua` is the ownership boundary for SavedVariables, module lifecycle, the internal bus, Blizzard chat-frame lifecycle hooks, message-event filters and the consolidated `AddMessage` post-hook.
+`Modules/StyleOwnership.lua` and `Modules/ControlsOwnership.lua` are no longer separate runtime files; their ownership is folded into the owning feature modules. The former `Modules/History.lua` has been removed. `Modules/Restore.lua` is the sole addon persistence owner. No new `RothChatDB.history` table is allocated, and pre-existing history data is left untouched.
 
-Feature modules remain independent:
-
-- presentation: Style, Colors, Resize;
-- chat-frame interaction: Dock, Controls, ChatBar, CopyOverlay, UrlCopy;
-- runtime behavior: Restore, Ticker, Timestamps, Cleaner, Alerts, Sticky;
-- configuration: root `Options.lua`.
-
-`Modules/History.lua` is legacy and intentionally excluded. `Modules/Restore.lua` is the single persistence owner.
+Bundled LibStub, CallbackHandler, and LibSharedMedia are loaded before Roth Chat's runtime files. The active file order is declared in `RothChat.toc`; keep the TOC synchronized when adding or moving a runtime owner.
 
 ## Startup and module state
 
-1. Blizzard loads libraries, Util, Core and module definitions in TOC order.
-2. Modules register through `RothChat:RegisterModule` without activating themselves.
-3. `ADDON_LOADED` initializes and migrates `RothChatDB`, preserving explicit user choices.
-4. Core initializes and activates configured modules. Successful `OnEnable` transitions a module to runtime-active state.
-5. `PLAYER_LOGIN` delivers one login notification to each active module.
-6. A module first enabled after login receives its one-time login notification immediately after successful activation.
-7. Consolidated `FCF_*` post-hooks route later frame changes through `CHAT_FRAME_READY`, `CHAT_FRAME_CLOSED` and `CHAT_LAYOUT_CHANGED`.
+1. Blizzard loads libraries, shared helpers, adapters, Core owners, feature modules, and settings in TOC order.
+2. Modules register their definitions. Core initializes `RothChatDB`, applies defaults only for missing values, and initializes configured modules.
+3. Successful `OnEnable` completion marks a module active. Core delivers `OnLogin` once after login; a module activated later receives its one-time notification after activation.
+4. Disable transitions make the module inactive, run module cleanup, and remove owner listeners, filters, and `AddMessage` callbacks.
+5. Native update events and `FCF_*` post-hooks enqueue chat lifecycle work. `ChatLifecycle.lua` coalesces the work into a single next-frame refresh.
 
-Configured and runtime state are intentionally separate:
+Configured state and runtime-active state differ. Hot callbacks must use `core:IsModuleActive(name)` or the module's established active guard; a checked settings box alone does not establish that `OnEnable` succeeded.
 
-```text
-configured disabled
-  -> no Init / no OnEnable
-configured enabled
-  -> Init once
-  -> OnEnable per activation
-  -> active
-  -> optional one-time OnLogin
-  -> OnDisable
-  -> core owner cleanup
-  -> inactive, still initialized
-```
+Core's frame event handler translates `ADDON_RESTRICTION_STATE_CHANGED` into the internal `CHAT_RESTRICTION_CHANGED` event with a plain boolean. Modules clear temporary content when restriction begins and do not retain opaque payloads for replay when access returns.
 
-Core cleanup removes owner bus listeners, message filters and `AddMessage` callbacks even if a module's own disable path is incomplete. Permanent hooks remain installed but must check runtime activation before acting.
+## Chat message flow
 
-## Retail 12.1 filter flow
+Blizzard's native chat history and rendering remain enabled. Roth Chat registers a single dispatcher per message event through the client adapter. The dispatcher gates the entire synchronous tuple before any module callback, packs exactly the received tuple, and calls priority-ordered feature filters. A no-op returns `false` only; a discard returns `true` only; a text change replaces only `arg1` and returns the exact received arity with interior and trailing `nil` values preserved. Unchanged secure tuples are left to Blizzard.
 
-```text
-Blizzard ChatFrameUtil registry
-  -> one Roth Chat dispatcher per event
-      -> accessibility gate for visible arg1
-      -> priority-ordered module callbacks
-      -> no-op: return false only
-      -> discard: return true only
-      -> text change: replace arg1 and return the complete received tuple
-  -> Blizzard formatting / routing / HistoryKeeper
-```
+The displayed-message path installs one post-hook per active chat frame. Before invoking feature callbacks, Core rejects chat lockdown, inaccessible frames, and inaccessible/non-string text, and clamps RGB values. It forwards only `(frame, text, safeR, safeG, safeB)`; line IDs, access IDs, and unknown trailing metadata do not enter feature state. Restore, Ticker, Alerts, and Controls consume this optional display feed according to their own policy. Filter and display callbacks are not guaranteed when the client blocks access.
 
-The core dispatcher packs incoming varargs with an explicit count, preserving interior and trailing `nil` values. It mirrors the arity it receives rather than assuming 14 or 19 fields.
+## Persistence and text boundaries
 
-Module filters are intentionally narrower: they may discard a message or propose a new visible `arg1`; they do not own sender, routing, line-ID, access-ID or metadata fields. A no-op never repacks the tuple through addon code.
+`ChatText.lua` is the shared boundary for timestamp removal/formatting, stable durable text, and copy normalization. Durable text is sanitized before retention so session-only account-name, Battle.net, and censored-message handles do not become SavedVariables content. The original Blizzard display remains responsible for live rendering.
 
-## Displayed-message flow
+Restore stores bounded records for permanent indexed chat windows. Its current row shape keeps timestamp metadata, timestamp-free durable text, sanitized RGB, and a schema marker in separate slots. Temporary whisper windows are excluded because Blizzard can reuse them. Unknown newer or invalid schema versions suspend Restore history access while leaving the store untouched. Unavailable identity data or message counts never stand in for an empty window. Restore snapshots the fade properties it owns and restores the snapshots when disabled. It does not eagerly rewrite the full database.
 
-Each discovered chat frame receives one secure `AddMessage` post-hook. Core fans already displayed, accessible messages out to registered module callbacks in priority order.
+Blizzard's `HistoryKeeper` remains available to the native chat input/history path. Roth Chat neither replaces it nor treats it as the addon scrollback store. Copy tools prefer eligible Restore data and can use native/frame text fallbacks; they apply the current copy timestamp setting once. CopyOverlay and the URL popup clear their edit-box contents and close on restriction entry.
 
-Primary consumers:
+## Frame lifecycle and presentation
 
-- Restore retains bounded accessible text for permanent chat-window identities;
-- Ticker accepts only messages arriving while its primary chat frame is hidden;
-- Alerts starts inactive dock-tab flash after display;
-- Controls animates bottom-of-chat smooth scrolling only while active.
+`ChatLifecycle.lua` coalesces native update signals and stable post-hooks such as window open, close, selection, docking, and reset. It discovers active frames, installs missing `AddMessage` observers, then emits internal ready/closed/layout events. Feature modules subscribe through the owner-aware Core bus rather than adding competing global frame scans.
 
-The feed is optional. No consumer may depend on guaranteed delivery or evaluate inaccessible text before its gate.
+Each observed frame installs subscription-mutation post-hooks once, before message observation. Native group/channel changes and `FCF_SetWindowName` invalidate the layout revision synchronously, while presentation refresh remains coalesced. Restore rechecks current name/list accessibility before consulting the fingerprint cache; `GetChatLayoutRevision(frame)` declines caching if the frame's invalidation hooks are incomplete. These boundaries follow the selected [ChatFrame mixin](https://github.com/Gethe/wow-ui-source/blob/d07eb00237d8891f153215db98a5df880a26cfe5/Interface/AddOns/Blizzard_ChatFrameBase/Shared/ChatFrame.lua) and [FloatingChatFrame setters](https://github.com/Gethe/wow-ui-source/blob/d07eb00237d8891f153215db98a5df880a26cfe5/Interface/AddOns/Blizzard_ChatFrameBase/Mainline/FloatingChatFrame.lua).
 
-## Chat-frame lifecycle
+Controls owns its chat mouse-wheel script while active and delegates to the captured original when inactive. ChatBar transfers accessory hover ownership as the selected frame changes. Style applies its own appearance and restores owned state when disabled. Resize and Dock cancel interrupted work and schedule bounded follow-up work. Restore owns its fade settings. Ticker owns the primary frame's immersion alpha, while Controls owns hover alpha; CopyOverlay snapshots/restores its temporary modal state and emits a visibility event so active owners can recompute the final alpha.
 
-Blizzard may create, select, dock, undock, close and reuse chat frames after login. Core collapses overlapping `FCF_*` calls into one queued lifecycle pass.
+Controls restores wheel/clipping values only while they still match its writes. Cleaner relinquishes a format changed by another owner. Alerts tracks only flashes it started and leaves pre-existing native flashes alone on teardown.
 
-- Controls attaches hover surfaces and its owned mouse-wheel script.
-- ChatBar transfers hover ownership when the selected dock frame changes.
-- Style reapplies guarded visual state.
-- Resize creates or hides frame-specific grips and cancels stale animations.
-- Restore applies owned fade settings to newly discovered frames.
-- CopyOverlay creates frame-local copy surfaces and closes them on frame teardown.
+`VisualPrimitives.lua` contains the decoration actually applied by modules. It is distinct from `Platform.lua`: the latter adapts current client APIs and does not own presentation. Existing provenance comments identify LS: Glass-derived material; see `ThirdParty/ATTRIBUTIONS.md` and the bundled Apache-2.0 license.
 
-Temporary whisper frames are reusable runtime surfaces, not durable persistence identities.
+## Scheduling, restrictions, and performance
 
-## Visibility and alpha arbitration
+The shared scheduler coalesces keyed jobs and removes its update driver when idle. Fade updates likewise run only while work is pending and validate completion identity after reentrant cancellation or replacement. Ticker uses a 100-slot ring with preview text capped at 1,024 UTF-8 characters plus a truncation marker. Restore retention is bounded; chat lifecycle updates coalesce; callbacks do not scan the entire retained history per message. Combat-deferred operations use stable keys and preserve required argument arity. Callback result forwarding allocates no result table, and registries compact only after removals.
 
-Controls owns hover state; Ticker owns immersion alpha for the configured primary chat frame; CopyOverlay is a temporary modal surface.
+`NS.CanAccessValue` is the operational gate for values; object/table access uses `NS.CanAccessObject`. Check accessibility before comparison, formatting, concatenation, retention, or table traversal. Chat messaging lockdown is a separate boundary: when active, modules drop processing and discard pending content work rather than replaying content after the transition.
 
-```text
-CopyOverlay close
-  -> restore pre-overlay alpha snapshot
-  -> emit COPY_OVERLAY_VISIBILITY(false)
-  -> Controls/Ticker calculate authoritative current alpha
-```
+## Settings and themes
 
-This ordering prevents a stale overlay snapshot from overriding the current hover or immersion state.
+Blizzard Settings expose **Minimal**, **Obsidian**, and **Ember** appearance presets, along with font and size presets. Composite preset setters persist through Core, then notify the dependent registered Settings variables. The rest of the settings cover appearance, chat fading, hover behavior, ticker animation, controls, timestamps, cleaner behavior, copy policy, and Restore limits. The values and defaults live in Core; controls and presentation live in `Options.lua` and the owning modules. Keep user choices during migrations: defaults apply only to missing values.
 
-## Persistence
+## External implementation and license boundary
 
-`RothChatDB.profile` stores settings, module flags and the addon version. Migrations initialize only missing or obsolete fields and preserve explicit choices.
+Roth Chat selectively reuses design concepts from the PR5 work based at `main@3c995183626002965043e38a837346fb290acd8a` and reviewed in `40c8fd59f9fab0a6701ae1b8203f3fb2f73c768f`; its current implementation remains separately owned and should be audited against the current APIs. The pinned external implementation review is retained in `RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md`. It documents why Roth Chat does not replace Blizzard rendering, copy Blizzard message handlers, or transplant third-party code. Chattynator implementation evidence in that review comes from a non-authoritative public fork snapshot. Prat and glass projects have separate source and license boundaries.
 
-Restore stores bounded entries only for permanent indexed chat windows. It snapshots Blizzard `fading`, `timeVisible` and `fadeDuration` values before changing them and restores those values when disabled.
+Exact third-party file provenance is in `ThirdParty/ATTRIBUTIONS.md`. LS: Glass-derived assets/adaptations remain Apache-2.0; original Glass assets remain MIT; vendored libraries retain their own notices. Do not merge the two Glass attributions or remove licenses from a release package.
 
-`RothChatDB.history` is legacy compatibility data. `History.lua` must not be enabled alongside Restore without an intentional replacement migration.
+## Validation status
 
-## Scheduling and performance
-
-The shared scheduler coalesces keyed deferred jobs. The fade updater and scheduler remove their `OnUpdate` scripts when idle. Ticker head operations use indexed queue bookkeeping. Combat-interrupted Resize, Dock and Style work cancels or deduplicates its active driver and defers at most one continuation.
-
-Controls owns `OnMouseWheel` while active rather than stacking another `HookScript` path over Blizzard scrolling. When inactive, its wrapper delegates to the captured original script.
-
-## Localization
-
-Cleaner snapshots Blizzard's current localized format strings. Normal mode removes brackets around the sender placeholder without replacing localized channel labels. Compact language-neutral tags are applied only when `cleanerShorten` is enabled. Disable restores a snapshot only when no later writer changed the same global.
-
-## Restriction boundary
-
-`canaccessvalue` compatibility is the operational gate. Chat callbacks may be skipped when values are inaccessible. No filter, ticker, copy, alert or restore path may depend on guaranteed callback delivery. Raw event payloads must not become durable feature state; only already displayed, accessible text may cross into bounded Restore/copy surfaces.
-
-Automated contracts live under `tests/` and `.github/workflows/validate.yml`. Runtime gates are recorded in `MIGRATION_12_1.md`.
+The expected target is Retail `12.1.5.70688`, interface `120105`, addon `1.2.0`; the checked source export and reference pins are dated 2026-11-02. Automated checks are defined in `.github/workflows/validate.yml`. **Live-client validation is NOT RUN.** See [docs/VALIDATION.md](docs/VALIDATION.md) for evidence, commands, and the remaining runtime matrix.

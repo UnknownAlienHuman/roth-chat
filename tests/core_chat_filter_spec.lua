@@ -1,79 +1,8 @@
--- Contract test for RothChat's centralized message-filter dispatcher.
--- Runs outside WoW with a deliberately small API stub.
-
-local function pack(...)
-  return { n = select("#", ...), ... }
-end
-
-unpack = table.unpack
-SlashCmdList = {}
-DEFAULT_CHAT_FRAME = { AddMessage = function() end }
-
-function debugstack()
-  return ""
-end
-
-function InCombatLockdown()
-  return false
-end
-
-function CreateFrame()
-  local frame = {}
-
-  function frame:SetScript(scriptName, callback)
-    self[scriptName] = callback
-  end
-
-  function frame:RegisterEvent()
-  end
-
-  return frame
-end
-
-local registeredFilters = {}
-local NS = {}
-
-function NS.SafeCall(_, fn, ...)
-  local results = pack(pcall(fn, ...))
-  if not results[1] then
-    return false, results[2]
-  end
-  return true, table.unpack(results, 2, results.n)
-end
-
-function NS.SafeConcat(...)
-  local out = {}
-  for i = 1, select("#", ...) do
-    out[#out + 1] = tostring(select(i, ...))
-  end
-  return table.concat(out, " ")
-end
-
-function NS.AddMessageEventFilter(event, callback)
-  registeredFilters[event] = callback
-  return true
-end
-
-function NS.RemoveMessageEventFilter(event, callback)
-  if registeredFilters[event] == callback then
-    registeredFilters[event] = nil
-  end
-  return true
-end
-
-function NS.IsSecretValue()
-  return false
-end
-
-function NS.GetChatFrames()
-  return {}
-end
-
-function NS.RunNextFrame(_, callback)
-  callback()
-end
-
-assert(loadfile("Core.lua"))("RothChat", NS)
+-- Exact received-tuple and accessibility contracts for the loaded dispatcher.
+local Runtime = assert(loadfile("tests/support/runtime.lua"))()
+local env = Runtime.New()
+local registeredFilters, NS = env.filters, env.ns
+local pack = NS.Pack
 
 local core = assert(_G.RothChat)
 local event = "CHAT_MSG_SAY"
@@ -107,7 +36,7 @@ assert(core:RegisterMessageFilter(noOpOwner, event, function(_, _, ...)
 end, 50))
 
 local dispatcher = assert(registeredFilters[event])
-local noOpResults = pack(dispatcher({}, event, table.unpack(payload, 1, payload.n)))
+local noOpResults = pack(dispatcher({}, event, unpack(payload, 1, payload.n)))
 assert(noOpResults.n == 1, "no-op path must not replace Blizzard's secure tuple")
 assert(noOpResults[1] == false, "no-op path must not discard")
 core:UnregisterMessageFilters(noOpOwner)
@@ -129,7 +58,7 @@ assert(core:RegisterMessageFilter(observerOwner, event, function(_, _, ...)
 end, 60))
 
 dispatcher = assert(registeredFilters[event])
-local transformedResults = pack(dispatcher({}, event, table.unpack(payload, 1, payload.n)))
+local transformedResults = pack(dispatcher({}, event, unpack(payload, 1, payload.n)))
 assert(transformedResults.n == payload.n + 1, "discard flag plus all 19 fields must be returned")
 assert(transformedResults[1] == false)
 assert(transformedResults[2] == "changed")
@@ -145,10 +74,43 @@ assert(core:RegisterMessageFilter(discardOwner, event, function()
 end, 10))
 
 dispatcher = assert(registeredFilters[event])
-local discardResults = pack(dispatcher({}, event, table.unpack(payload, 1, payload.n)))
+local discardResults = pack(dispatcher({}, event, unpack(payload, 1, payload.n)))
 assert(discardResults.n == 1)
 assert(discardResults[1] == true)
 core:UnregisterMessageFilters(discardOwner)
 assert(registeredFilters[event] == nil, "last owner removal must unregister the dispatcher")
+
+-- Future-width and 14-field callbacks preserve interior and trailing nils.
+for _, arity in ipairs({ 1, 14, 19, 23 }) do
+  local owner = {}
+  core:RegisterMessageFilter(owner, event, function(_, _, text) return false, text .. "!" end)
+  local args = { [1] = "payload", [3] = "third", n = arity }
+  local result = pack(registeredFilters[event]({}, event, unpack(args, 1, arity)))
+  assert(result.n == arity + 1 and result[2] == "payload!")
+  for index = 2, arity do assert(result[index + 1] == args[index]) end
+  core:UnregisterMessageFilters(owner)
+end
+
+-- A readable message does not make neighboring routing metadata ordinary.
+do
+  local owner, calls = {}, 0
+  core:RegisterMessageFilter(owner, event, function() calls = calls + 1; return false, "changed" end)
+  local result = pack(registeredFilters[event]({}, event, "readable", env.inaccessible))
+  assert(calls == 0 and result.n == 1 and result[1] == false)
+  env.restricted = true
+  result = pack(registeredFilters[event]({}, event, "readable", "sender"))
+  assert(calls == 0 and result.n == 1)
+  env.restricted = false
+  core:UnregisterMessageFilters(owner)
+end
+
+-- Unchanged text, inaccessible results and invalid replacement types are no-op.
+for _, replacement in ipairs({ "hello", env.inaccessible, 42 }) do
+  local owner = {}
+  core:RegisterMessageFilter(owner, event, function() return false, replacement end)
+  local result = pack(registeredFilters[event]({}, event, "hello", "sender", nil))
+  assert(result.n == 1 and result[1] == false)
+  core:UnregisterMessageFilters(owner)
+end
 
 print("core_chat_filter_spec: ok")

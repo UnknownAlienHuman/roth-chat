@@ -1,5 +1,7 @@
 -- RothChat - Alerts module
--- Plays whisper sounds and highlights inactive docked chat tabs.
+-- Adds a broad inactive-tab flash policy. Whisper audio remains owned by
+-- Blizzard_ChatFrameBase, which already plays SOUNDKIT.TELL_MESSAGE with the
+-- native cooldown after processing WHISPER and BN_WHISPER.
 
 local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
@@ -7,17 +9,11 @@ local RothChat = _G.RothChat
 local M = {
   name = "Alerts",
   defaultEnabled = true,
-  description = "Plays whisper sounds and highlights inactive chat tabs on new messages.",
+  description = "Highlights inactive docked chat tabs on new messages.",
 }
 
-local SOUND_ID = (SOUNDKIT and SOUNDKIT.TELL_MESSAGE) or 3081
-local PRUNE_INTERVAL = 1.5
-local LINE_TTL = 2.0
-
-local seenLineIDs = {}
-local nextPrune = 0
-local lastSoundAt = 0
 local listenersRegistered = false
+local ownedFlashes = setmetatable({}, { __mode = "k" })
 
 local function IsEnabled(core)
   return M.active and core and core:IsModuleActive("Alerts")
@@ -28,107 +24,81 @@ local function CanFlashChatTab()
 end
 
 local function GetChatTab(frame)
-  local name = frame and frame.GetName and frame:GetName()
-  if type(name) ~= "string" then return nil end
-  return _G[name .. "Tab"]
-end
+  if not NS.CanAccessObject(frame) then return nil end
+  local getName = frame.GetName
+  if not NS.CanAccessValue(getName) or type(getName) ~= "function" then return nil end
+  local ok, name = pcall(getName, frame)
+  if not ok or not NS.CanAccessValue(name) or type(name) ~= "string" then return nil end
 
-local function GetSelectedDockFrame()
-  if NS.GetSelectedDockChatFrame then
-    local selected = NS.GetSelectedDockChatFrame()
-    if selected then return selected end
-  end
-  return _G.SELECTED_CHAT_FRAME
+  local tab = _G[name .. "Tab"]
+  return NS.CanAccessObject(tab) and tab or nil
 end
 
 local function IsInactiveDockTab(frame)
-  if not frame or frame.__rothRestoring then return false end
-  if not (NS.IsDockedChatFrame and NS.IsDockedChatFrame(frame)) then return false end
-  local selected = GetSelectedDockFrame()
+  if not NS.CanAccessObject(frame) then return false end
+  local restoring = frame.__rothRestoring
+  if not NS.CanAccessValue(restoring) or restoring then return false end
+  if not NS.IsActiveChatFrame(frame) or not NS.IsDockedChatFrame(frame) then return false end
+
+  local selected = NS.GetSelectedDockChatFrame()
   return selected ~= nil and selected ~= frame
 end
 
 local function StartInactiveTabFlash(frame)
   if not CanFlashChatTab() or not IsInactiveDockTab(frame) then return end
   local tab = GetChatTab(frame)
-  if not tab or tab.alerting then return end
-  pcall(_G.FCF_StartAlertFlash, frame)
+  if not tab then return end
+
+  local alerting = tab.alerting
+  if not NS.CanAccessValue(alerting) or alerting then return end
+  local ok = pcall(_G.FCF_StartAlertFlash, frame)
+  if not ok then return end
+
+  if not NS.CanAccessObject(tab) then return end
+  alerting = tab.alerting
+  if NS.CanAccessValue(alerting) and alerting == true then
+    ownedFlashes[frame] = true
+  end
 end
 
 local function StopTabFlash(frame, selectedOnly)
-  if not CanFlashChatTab() or not frame then return end
+  if not NS.CanAccessObject(frame) then return end
+  if not ownedFlashes[frame] then return end
+  if not CanFlashChatTab() then
+    ownedFlashes[frame] = nil
+    return
+  end
+
+  if selectedOnly and NS.GetSelectedDockChatFrame() ~= frame then return end
   local tab = GetChatTab(frame)
-  if not tab or not tab.alerting then return end
-  if selectedOnly and GetSelectedDockFrame() ~= frame then return end
-  pcall(_G.FCF_StopAlertFlash, frame)
+  if tab then
+    local alerting = tab.alerting
+    if NS.CanAccessValue(alerting) and alerting == true then
+      pcall(_G.FCF_StopAlertFlash, frame)
+    end
+  end
+  ownedFlashes[frame] = nil
 end
 
 local function RefreshDockFlashes()
   if not CanFlashChatTab() then return end
-  for _, cf in ipairs(NS.GetChatFrames()) do
-    StopTabFlash(cf, true)
+  for _, chatFrame in ipairs(NS.GetChatFrames()) do
+    StopTabFlash(chatFrame, true)
   end
 end
 
 local function StopAllFlashes()
-  if not CanFlashChatTab() then return end
-  for _, cf in ipairs(NS.GetChatFrames()) do
-    StopTabFlash(cf, false)
+  for chatFrame in pairs(ownedFlashes) do
+    if NS.CanAccessObject(chatFrame) then StopTabFlash(chatFrame, false) end
   end
-end
-
-local function GetSoundCooldown()
-  if ChatFrameConstants and type(ChatFrameConstants.WhisperSoundAlertCooldown) == "number" then
-    return ChatFrameConstants.WhisperSoundAlertCooldown
-  end
-  if type(CHAT_TELL_ALERT_TIME) == "number" and CHAT_TELL_ALERT_TIME > 0 then
-    return CHAT_TELL_ALERT_TIME
-  end
-  return 1.0
-end
-
-local function PruneSeen(now)
-  if now < nextPrune then return end
-  nextPrune = now + PRUNE_INTERVAL
-  for lineID, timestamp in pairs(seenLineIDs) do
-    if (now - timestamp) > LINE_TTL then seenLineIDs[lineID] = nil end
-  end
-end
-
-local function ShouldHandleLine(lineID, now)
-  if NS.CanAccessValue and not NS.CanAccessValue(lineID) then
-    return true
-  end
-  if type(lineID) ~= "number" or lineID <= 0 then
-    return true
-  end
-
-  local timestamp = seenLineIDs[lineID]
-  if timestamp and (now - timestamp) <= LINE_TTL then return false end
-  seenLineIDs[lineID] = now
-  return true
-end
-
-local function OnWhisperEvent(_, _, ...)
-  if not IsEnabled(M.core) then return end
-
-  local now = GetTime()
-  PruneSeen(now)
-
-  -- CHAT_MSG_* payload: lineID is argument #11.
-  local lineID = select(11, ...)
-  if not ShouldHandleLine(lineID, now) then return end
-
-  local cooldown = GetSoundCooldown()
-  if (now - lastSoundAt) < cooldown then return end
-  lastSoundAt = now
-
-  pcall(PlaySound, SOUND_ID)
+  ownedFlashes = setmetatable({}, { __mode = "k" })
 end
 
 local function OnAddMessage(frame, text)
   if not IsEnabled(M.core) then return end
-  if type(text) ~= "string" then text = NS.SafeToString(text) end
+  if NS.IsChatMessagingRestricted() then return end
+  if not NS.CanAccessValue(text) then return end
+  if type(text) ~= "string" then return end
   if text == "" then return end
   StartInactiveTabFlash(frame)
 end
@@ -152,36 +122,23 @@ end
 
 function M:Init(core)
   self.core = core
-  self.eventFrame = self.eventFrame or CreateFrame("Frame")
-  self.eventFrame:SetScript("OnEvent", OnWhisperEvent)
   return true
 end
 
 function M:OnEnable(core)
-  local frame = self.eventFrame
-  if not frame then return end
-
   self.active = true
   listenersRegistered = false
   core:EnsureChatLifecycleHooks()
   RegisterLifecycleListeners(core)
   core:RegisterAddMessageHook(OnAddMessage, self, 80)
   RefreshDockFlashes()
-  frame:RegisterEvent("CHAT_MSG_WHISPER")
-  frame:RegisterEvent("CHAT_MSG_BN_WHISPER")
 end
 
 function M:OnDisable(core)
   self.active = false
   listenersRegistered = false
-
-  if self.eventFrame then self.eventFrame:UnregisterAllEvents() end
-  if core and core.UnregisterAddMessageHooks then core:UnregisterAddMessageHooks(self) end
+  core:UnregisterAddMessageHooks(self)
   StopAllFlashes()
-
-  if table and table.wipe then table.wipe(seenLineIDs) else seenLineIDs = {} end
-  nextPrune = 0
-  lastSoundAt = 0
 end
 
 RothChat:RegisterModule(M)

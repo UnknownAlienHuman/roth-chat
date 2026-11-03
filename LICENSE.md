@@ -1,4 +1,9 @@
+# Roth Chat license
+
+Except for third-party material identified in [`ThirdParty/ATTRIBUTIONS.md`](ThirdParty/ATTRIBUTIONS.md) and its accompanying license files, Roth Chat's original code and documentation are distributed under the MIT License below.
+
 The MIT License (MIT)
+
 Copyright (c) 2024 Roth Team
 Copyright (c) 2026 Neomorph
 

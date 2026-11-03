@@ -13,6 +13,8 @@ local TICKER_MODULES = { "Ticker" }
 local CHATBAR_MODULES = { "ChatBar" }
 local CLEANER_MODULES = { "Cleaner" }
 local CONTROLS_MODULES = { "Controls" }
+local RESTORE_MODULES = { "Restore" }
+local COPY_MODULES = { "CopyOverlay" }
 
 local BUILTIN_MEDIA = {
   font = {
@@ -73,6 +75,13 @@ local function RefreshModules(moduleNames)
   end
 end
 
+local function NotifySettings(variables)
+  if type(Settings.NotifyUpdate) ~= "function" then return end
+  for _, variable in ipairs(variables or {}) do
+    Settings.NotifyUpdate(variable)
+  end
+end
+
 local function SetProfileValue(key, value)
   if RothChat:Get(key) == value then
     return false
@@ -89,22 +98,60 @@ local function ApplyProfileValue(key, value, moduleNames)
 end
 
 local function ApplyModuleToggle(key, value)
-  value = value and true or false
+  if type(key) ~= "string" then return end
+  local name = key:match("^module_(.+)_enabled$")
+  if not name or not (RothChat.modules and RothChat.modules[name]) then return end
+
+  value = value == true
   if not SetProfileValue(key, value) then
     return
   end
 
-  local name = key:match("^module_(.+)_enabled$")
-  if not name then
-    RothChat:ApplyModuleEnablement()
-  elseif value then
+  if type(InCombatLockdown) == "function" and InCombatLockdown() then
+    RothChat:DeferKeyed("options:module:" .. name, function()
+      if RothChat:Get("enabled") == false then return end
+      if RothChat:IsModuleEnabled(name) then
+        RothChat:EnableModule(name)
+      else
+        RothChat:DisableModule(name)
+      end
+    end)
+    return
+  end
+
+  if RothChat:Get("enabled") == false then return end
+  if value then
     RothChat:EnableModule(name)
   else
     RothChat:DisableModule(name)
   end
 end
 
+local function ClampSliderValue(value, minimum, maximum, step)
+  if not NS.CanAccessValue(value) then return minimum end
+  value = tonumber(value)
+  if not value then return minimum end
+  value = math.max(minimum, math.min(maximum, value))
+  if type(step) == "number" and step > 0 then
+    value = minimum + math.floor(((value - minimum) / step) + 0.5) * step
+    value = math.max(minimum, math.min(maximum, value))
+  end
+  return value
+end
+
+local function IsDropdownValueAllowed(optionsFunc, value)
+  if not NS.CanAccessValue(value) then return false end
+  if type(value) ~= "string" or type(optionsFunc) ~= "function" then return false end
+  local options = optionsFunc()
+  if type(options) ~= "table" then return false end
+  for _, option in ipairs(options) do
+    if type(option) == "table" and option.value == value then return true end
+  end
+  return false
+end
+
 local function NormalizeRGBHex(value, fallback)
+  if not NS.CanAccessValue(value) then return fallback or "FFFFFF" end
   local source = type(value) == "string" and value or fallback or "FFFFFF"
   source = source:gsub("^#", ""):gsub("^|c%x%x", ""):upper()
   if #source >= 8 then
@@ -203,10 +250,10 @@ local function AddCheckbox(category, variable, label, tooltip, key, moduleNames)
     label,
     GetDefaultValue(key, false),
     function()
-      return RothChat:Get(key) and true or false
+      return RothChat:Get(key) == true
     end,
     function(value)
-      ApplyProfileValue(key, value and true or false, moduleNames)
+      ApplyProfileValue(key, value == true, moduleNames)
     end
   )
 
@@ -225,7 +272,7 @@ local function AddModuleCheckbox(category, variable, label, tooltip, key)
       if value == nil then
         return GetModuleDefault(key)
       end
-      return value and true or false
+      return value == true
     end,
     function(value)
       ApplyModuleToggle(key, value)
@@ -241,12 +288,12 @@ local function AddSlider(category, variable, label, tooltip, key, minValue, maxV
     variable,
     Settings.VarType.Number,
     label,
-    tonumber(GetDefaultValue(key, minValue)) or minValue,
+    ClampSliderValue(GetDefaultValue(key, minValue), minValue, maxValue, step),
     function()
-      return tonumber(RothChat:Get(key)) or tonumber(GetDefaultValue(key, minValue)) or minValue
+      return ClampSliderValue(RothChat:Get(key) or GetDefaultValue(key, minValue), minValue, maxValue, step)
     end,
     function(value)
-      ApplyProfileValue(key, tonumber(value) or minValue, moduleNames)
+      ApplyProfileValue(key, ClampSliderValue(value, minValue, maxValue, step), moduleNames)
     end
   )
 
@@ -264,7 +311,7 @@ local function AddDropdown(category, variable, label, tooltip, key, optionsFunc,
       return tostring(RothChat:Get(key) or GetDefaultValue(key, ""))
     end,
     function(value)
-      if type(value) ~= "string" then
+      if not IsDropdownValueAllowed(optionsFunc, value) then
         return
       end
       ApplyProfileValue(key, value, moduleNames)
@@ -310,7 +357,7 @@ local function AddImmersionPreset(category)
       return tostring(RothChat:Get("immersionPreset") or GetDefaultValue("immersionPreset", "normal"))
     end,
     function(value)
-      if type(value) ~= "string" or value == "" then
+      if not RothChat.IMMERSION_PRESETS or not RothChat.IMMERSION_PRESETS[value] then
         return
       end
       RothChat:ApplyImmersionPreset(value)
@@ -320,6 +367,47 @@ local function AddImmersionPreset(category)
   )
 
   Settings.CreateDropdown(category, setting, options, "Controls fade-in, fade-out, and hover delay.")
+end
+
+local function MakePresetOptions(presets)
+  return function()
+    local container = Settings.CreateControlTextContainer()
+    local keys = {}
+    for key in pairs(presets or {}) do keys[#keys + 1] = key end
+    table.sort(keys, function(a, b)
+      local aLabel = tostring(presets[a].label or a)
+      local bLabel = tostring(presets[b].label or b)
+      return aLabel < bLabel
+    end)
+    for _, key in ipairs(keys) do
+      container:Add(key, presets[key].label or key)
+    end
+    return container:GetData()
+  end
+end
+
+local function AddPresetDropdown(category, variable, label, tooltip, key, presets, applyMethod, moduleNames, changedVariables)
+  if type(presets) ~= "table" or type(applyMethod) ~= "string" then return end
+  local options = MakePresetOptions(presets)
+  local setting = RegisterProxySetting(
+    category,
+    variable,
+    Settings.VarType.String,
+    label,
+    tostring(GetDefaultValue(key, "")),
+    function()
+      return tostring(RothChat:Get(key) or GetDefaultValue(key, ""))
+    end,
+    function(value)
+      if type(value) ~= "string" or not presets[value] then return end
+      local apply = RothChat[applyMethod]
+      if type(apply) ~= "function" then return end
+      apply(RothChat, value)
+      NotifySettings(changedVariables)
+      RefreshModules(moduleNames)
+    end
+  )
+  Settings.CreateDropdown(category, setting, options, tooltip)
 end
 
 local function AddTickerAnimation(category)
@@ -365,43 +453,162 @@ local function BuildSettingsCategory()
 
   local category = Settings.RegisterVerticalLayoutCategory(OPTIONS_NAME)
   settingsCategory = category
+  local chatBehavior = Settings.RegisterVerticalLayoutSubcategory(category, "Chat Behavior")
 
   AddCheckbox(
-    category,
+    chatBehavior,
     "ROTHCHAT_IMMERSION_ENABLED",
     "Hide Chat When Idle",
     "Fades the primary chat frame when idle and lets the ticker take over.",
     "immersionEnabled",
     TICKER_MODULES
   )
-  AddImmersionPreset(category)
+  AddImmersionPreset(chatBehavior)
   AddCheckbox(
-    category,
+    chatBehavior,
     "ROTHCHAT_TICKER_ENABLED",
     "Enable Ticker",
     "Shows incoming messages as an overlay when chat is hidden.",
     "tickerEnabled",
     TICKER_MODULES
   )
-  AddTickerAnimation(category)
+  AddTickerAnimation(chatBehavior)
   AddCheckbox(
-    category,
-    "ROTHCHAT_CHATBAR_ENABLED",
-    "Channel Bar",
-    "Shows the quick channel buttons beside the chat frame.",
-    "chatBarEnabled",
-    CHATBAR_MODULES
-  )
-  AddCheckbox(
-    category,
+    chatBehavior,
     "ROTHCHAT_SMOOTH_SCROLL",
     "Smooth Scroll",
     "Uses animated movement when scrolling chat history.",
     "smoothScrollEnabled",
     CONTROLS_MODULES
   )
+  AddSlider(
+    chatBehavior,
+    "ROTHCHAT_PRIMARY_CHAT",
+    "Primary Chat Window",
+    "Chat window used for idle fading and the message ticker.",
+    "primaryChatIndex",
+    1,
+    10,
+    1,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    TICKER_MODULES
+  )
+  AddSlider(
+    chatBehavior,
+    "ROTHCHAT_TICKER_SPEED",
+    "Ticker Speed",
+    "Playback speed for the ticker animations that reveal text over time.",
+    "tickerSpeed",
+    5,
+    100,
+    5,
+    function(value) return string.format("%d chars/sec", math.floor(value + 0.5)) end,
+    TICKER_MODULES
+  )
+  AddCheckbox(
+    chatBehavior,
+    "ROTHCHAT_HOVER_CONTROLS",
+    "Show Chat Controls on Hover",
+    "Fades the chat buttons and channel bar in when the pointer enters the chat area.",
+    "hoverControls",
+    CONTROLS_MODULES
+  )
+  AddSlider(
+    chatBehavior,
+    "ROTHCHAT_SCROLL_DURATION",
+    "Scroll Animation Duration",
+    "Time used for smooth chat scrolling. Shorter values move the history faster.",
+    "smoothScrollDuration",
+    0.05,
+    1,
+    0.05,
+    function(value) return string.format("%.2f sec", value) end,
+    CONTROLS_MODULES
+  )
+
+  local channelBar = Settings.RegisterVerticalLayoutSubcategory(category, "Channel Bar")
+  AddCheckbox(
+    channelBar,
+    "ROTHCHAT_CHATBAR_ENABLED",
+    "Show Channel Bar",
+    "Shows quick channel buttons beside the selected chat window.",
+    "chatBarEnabled",
+    CHATBAR_MODULES
+  )
+  AddSlider(
+    channelBar,
+    "ROTHCHAT_CHATBAR_ATTACH_TO",
+    "Attach to Chat Window",
+    "Chat window that receives the channel buttons.",
+    "chatBarAttachTo",
+    1,
+    10,
+    1,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    CHATBAR_MODULES
+  )
+  AddSlider(
+    channelBar,
+    "ROTHCHAT_CHATBAR_BUTTON_SIZE",
+    "Button Size",
+    "Size of the channel buttons in pixels.",
+    "chatBarButtonSize",
+    12,
+    32,
+    1,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    CHATBAR_MODULES
+  )
+  AddSlider(
+    channelBar,
+    "ROTHCHAT_CHATBAR_SPACING",
+    "Button Spacing",
+    "Gap between channel buttons in pixels.",
+    "chatBarSpacing",
+    0,
+    16,
+    1,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    CHATBAR_MODULES
+  )
+  AddDropdown(
+    channelBar,
+    "ROTHCHAT_CHATBAR_ANCHOR",
+    "Button Position",
+    "Places the channel buttons along the selected side of the chat window.",
+    "chatBarAnchor",
+    MakeOptions({
+      { label = "Left", value = "LEFT" },
+      { label = "Right", value = "RIGHT" },
+      { label = "Top", value = "TOP" },
+      { label = "Bottom", value = "BOTTOM" },
+    }),
+    CHATBAR_MODULES
+  )
 
   local typography = Settings.RegisterVerticalLayoutSubcategory(category, "Typography")
+  AddPresetDropdown(
+    typography,
+    "ROTHCHAT_FONT_PRESET",
+    "Font Preset",
+    "Applies one of Roth Chat's built-in font choices.",
+    "fontPreset",
+    RothChat.FONT_PRESETS,
+    "ApplyFontPreset",
+    FONT_MODULES,
+    { "ROTHCHAT_STYLE_FONT", "ROTHCHAT_STYLE_SHADOW" }
+  )
+  AddPresetDropdown(
+    typography,
+    "ROTHCHAT_TEXT_SIZE_PRESET",
+    "Text Size Preset",
+    "Applies a compact, normal, or large chat text size.",
+    "textSizePreset",
+    RothChat.TEXT_SIZE_PRESETS,
+    "ApplyTextSizePreset",
+    FONT_MODULES,
+    { "ROTHCHAT_STYLE_FONT_SIZE" }
+  )
   AddDropdown(
     typography,
     "ROTHCHAT_STYLE_FONT",
@@ -452,6 +659,32 @@ local function BuildSettingsCategory()
   AddEditBoxPosition(typography)
 
   local background = Settings.RegisterVerticalLayoutSubcategory(category, "Background")
+  AddPresetDropdown(
+    background,
+    "ROTHCHAT_STYLE_PRESET",
+    "Appearance Preset",
+    "Applies a built-in background, border, and timestamp color combination.",
+    "stylePreset",
+    RothChat.STYLE_PRESETS,
+    "ApplyStylePreset",
+    STYLE_MODULES,
+    {
+      "ROTHCHAT_STYLE_BACKGROUND",
+      "ROTHCHAT_STYLE_BACKGROUND_ALPHA",
+      "ROTHCHAT_STYLE_BACKGROUND_COLOR",
+      "ROTHCHAT_STYLE_BORDER",
+      "ROTHCHAT_STYLE_BORDER_COLOR",
+      "ROTHCHAT_TIMESTAMP_COLOR",
+    }
+  )
+  AddCheckbox(
+    background,
+    "ROTHCHAT_STYLE_ENABLED",
+    "Enable Chat Styling",
+    "Applies Roth Chat font, background, border, and edit box styling to chat windows.",
+    "styleEnabled",
+    STYLE_MODULES
+  )
   AddCheckbox(
     background,
     "ROTHCHAT_STYLE_BACKGROUND",
@@ -519,6 +752,56 @@ local function BuildSettingsCategory()
     "styleBorderTexture",
     MakeMediaOptions("border", "styleBorderTexture"),
     STYLE_MODULES
+  )
+
+  local scrollback = Settings.RegisterVerticalLayoutSubcategory(category, "Scrollback & Copy")
+  AddCheckbox(
+    scrollback,
+    "ROTHCHAT_RESTORE_ENABLED",
+    "Keep Chat Scrollback",
+    "Restores recent displayed messages after a reload for each permanent chat window.",
+    "restoreEnabled",
+    RESTORE_MODULES
+  )
+  AddSlider(
+    scrollback,
+    "ROTHCHAT_RESTORE_LINES",
+    "Lines per Chat Window",
+    "Maximum number of displayed messages retained for each chat window.",
+    "restoreMaxLinesPerChat",
+    100,
+    5000,
+    100,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    RESTORE_MODULES
+  )
+  AddCheckbox(
+    scrollback,
+    "ROTHCHAT_COPY_FROM_HISTORY",
+    "Copy from Restored Scrollback",
+    "Includes retained messages when copying chat text.",
+    "copyFromHistory",
+    COPY_MODULES
+  )
+  AddCheckbox(
+    scrollback,
+    "ROTHCHAT_COPY_TIMESTAMPS",
+    "Include Timestamps when Copying",
+    "Adds a plain timestamp to copied messages when one is available.",
+    "copyIncludeTimestamps",
+    COPY_MODULES
+  )
+  AddSlider(
+    scrollback,
+    "ROTHCHAT_COPY_MAX_LINES",
+    "Maximum Lines to Copy",
+    "Limits the number of recent chat lines shown in the copy window.",
+    "copyMaxLines",
+    50,
+    5000,
+    50,
+    function(value) return tostring(math.floor(value + 0.5)) end,
+    COPY_MODULES
   )
 
   local features = Settings.RegisterVerticalLayoutSubcategory(category, "Features")

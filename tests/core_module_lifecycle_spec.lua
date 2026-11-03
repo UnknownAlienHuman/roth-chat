@@ -1,98 +1,8 @@
--- Runtime lifecycle contract for RothChat modules.
--- Executes outside WoW with a minimal API surface.
-
-local function pack(...)
-  return { n = select("#", ...), ... }
-end
-
-unpack = table.unpack
-SlashCmdList = {}
-DEFAULT_CHAT_FRAME = { AddMessage = function() end }
-
-function debugstack()
-  return ""
-end
-
-function InCombatLockdown()
-  return false
-end
-
-function hooksecurefunc()
-end
-
-function CreateFrame()
-  local frame = {}
-
-  function frame:SetScript(scriptName, callback)
-    self[scriptName] = callback
-  end
-
-  function frame:RegisterEvent()
-  end
-
-  return frame
-end
-
-local function newNamespace()
-  local registeredFilters = {}
-  local ns = {}
-
-  function ns.SafeCall(_, fn, ...)
-    local results = pack(pcall(fn, ...))
-    if not results[1] then
-      return false, results[2]
-    end
-    return true, table.unpack(results, 2, results.n)
-  end
-
-  function ns.SafeConcat(...)
-    local out = {}
-    for i = 1, select("#", ...) do
-      out[#out + 1] = tostring(select(i, ...))
-    end
-    return table.concat(out, " ")
-  end
-
-  function ns.AddMessageEventFilter(event, callback)
-    registeredFilters[event] = callback
-    return true
-  end
-
-  function ns.RemoveMessageEventFilter(event, callback)
-    if registeredFilters[event] == callback then
-      registeredFilters[event] = nil
-    end
-    return true
-  end
-
-  function ns.CanAccessValue()
-    return true
-  end
-
-  function ns.IsSecretValue()
-    return false
-  end
-
-  function ns.GetChatFrames()
-    return {}
-  end
-
-  function ns.RunNextFrame(_, callback)
-    callback()
-  end
-
-  function ns.IsSettingsOpenRestricted()
-    return false
-  end
-
-  return ns, registeredFilters
-end
-
+-- Runtime lifecycle contract using the production core composition.
+local Runtime = assert(loadfile("tests/support/runtime.lua"))()
 local function loadCore(profile)
-  RothChatDB = { profile = profile or {} }
-  local ns, filters = newNamespace()
-  assert(loadfile("Core.lua"))("RothChat", ns)
-  return assert(_G.RothChat), filters
+  local env = Runtime.New(profile)
+  return env.core, env.filters
 end
 
 -- Initial activation, login delivery, owner cleanup, and idempotent disable.
@@ -141,7 +51,8 @@ do
   assert(calls.enable == 1)
   assert(calls.login == 0)
   assert(core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 1)
+  DEFAULT_CHAT_FRAME:AddMessage("active")
+  assert(calls.feed == 1)
   assert(filters.CHAT_MSG_SAY ~= nil)
 
   core:OnPlayerLogin()
@@ -153,7 +64,8 @@ do
   core:DisableModule(module.name)
   assert(calls.disable == 1)
   assert(not core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 0, "core must remove owner AddMessage hooks")
+  DEFAULT_CHAT_FRAME:AddMessage("inactive")
+  assert(calls.feed == 1, "disabled owner must stop observing messages")
   assert(filters.CHAT_MSG_SAY == nil, "core must remove owner message filters")
 
   core:Emit("PROBE")
@@ -167,7 +79,8 @@ do
   assert(calls.enable == 2)
   assert(calls.login == 1, "OnLogin is a one-shot lifecycle notification")
   assert(core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 1)
+  DEFAULT_CHAT_FRAME:AddMessage("reactivated")
+  assert(calls.feed == 2, "reactivation must install exactly one observer")
 end
 
 -- A module disabled at login must receive OnLogin when first enabled later.
@@ -235,6 +148,39 @@ do
   assert(calls.enable == 0)
   assert(calls.login == 0)
   assert(not core:IsModuleActive(module.name))
+end
+
+-- Partial activation must relinquish resources even when OnEnable errors.
+do
+  local core, filters = loadCore({})
+  local disabled = 0
+  local module = { name = "Partial" }
+  function module:OnEnable(runtime)
+    runtime:RegisterMessageFilter(self, "CHAT_MSG_SAY", function() return false end)
+    runtime:On("LEAK", function() error("stale listener") end, self)
+    error("activation failed")
+  end
+  function module:OnDisable() disabled = disabled + 1 end
+  core:RegisterModule(module)
+  core:OnAddonLoaded()
+  assert(not core:IsModuleActive("Partial"))
+  assert(disabled == 1 and filters.CHAT_MSG_SAY == nil)
+  core:Emit("LEAK")
+end
+
+-- Migration preserves explicit choices and repairs corrupt primitives.
+do
+  local core = loadCore({ enabled = false, styleEnabled = false, restoreEnabled = false,
+    styleFontSize = 9999, primaryChatIndex = -1, tickerSpeed = 0/0,
+    tickerAnimation = "invalid", styleBackgroundColor = "#abcdef", styleFont = {} })
+  core:OnAddonLoaded()
+  assert(core:Get("enabled") == false and core:Get("styleEnabled") == false)
+  assert(core:Get("restoreEnabled") == false)
+  assert(core:Get("styleFontSize") == 32 and core:Get("primaryChatIndex") == 1)
+  assert(core:Get("tickerSpeed") == 30 and core:Get("tickerAnimation") == "fade")
+  assert(core:Get("styleBackgroundColor") == "ABCDEF")
+  assert(type(core:Get("styleFont")) == "string")
+  assert(core.db.history == nil, "new profiles must not allocate inactive history")
 end
 
 print("core_module_lifecycle_spec: ok")

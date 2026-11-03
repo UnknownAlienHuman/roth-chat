@@ -1,8 +1,8 @@
 -- RothChat - Resize module (Rubber Band)
--- Goal: easy temporary resize through a grip or the primary chat tab.
--- The frame returns to its captured base size after inactivity.
+-- Provides temporary resizing and returns each frame to the base geometry that
+-- existed before Roth Chat started the current resize session.
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 
 local M = {
@@ -19,293 +19,388 @@ local SNAP_PIXELS_PER_SEC = 900
 local SNAP_ANIM_STEP = 0.016
 local MAIN_CHAT_INDEX = 1
 
-local grips = {}
-local state = {}
+local grips = setmetatable({}, { __mode = "k" })
+local state = setmetatable({}, { __mode = "k" })
 local resizeActive = false
 local lifecycleListenersRegistered = false
+M.__applyDeferredKey = {}
 
 local AnimateSize
+
+local function CanAccessFrame(frame)
+  return frame ~= nil and NS.CanAccessObject(frame)
+end
 
 local function IsEnabled(core)
   return resizeActive and core and core:IsModuleActive("Resize")
 end
 
-local function GetState(cf)
-  if not state[cf] then
-    state[cf] = {
+local function GetState(frame)
+  local current = state[frame]
+  if not current then
+    current = {
       baseW = nil,
       baseH = nil,
       timer = nil,
       anim = nil,
-      snapDeferred = false,
+      ownsTemporarySize = false,
+      snapKey = {},
+      restoreKey = {},
+      ensureKey = {},
+      stopKey = {},
     }
+    state[frame] = current
   end
-  return state[cf]
+  return current
 end
 
-local function IsMainChatFrame(cf)
-  if not cf then return false end
-  local idx = NS.GetChatFrameIndex and NS.GetChatFrameIndex(cf)
-  return idx == MAIN_CHAT_INDEX
+local function IsMainChatFrame(frame)
+  return CanAccessFrame(frame) and NS.GetChatFrameIndex(frame) == MAIN_CHAT_INDEX
 end
 
-local function StopSnapTimer(cf)
-  local st = GetState(cf)
-  if st.timer then
-    st.timer:Cancel()
-    st.timer = nil
+local function IsActiveFrame(frame)
+  return CanAccessFrame(frame) and NS.IsActiveChatFrame(frame)
+end
+
+local function StopSnapTimer(core, frame)
+  local current = GetState(frame)
+  if current.timer then
+    current.timer:Cancel()
+    current.timer = nil
   end
-  if st.anim then
-    st.anim:Cancel()
-    st.anim = nil
+  if current.anim then
+    current.anim:Cancel()
+    current.anim = nil
+  end
+  if core then
+    core:CancelDeferred(current.snapKey)
+    core:CancelDeferred(current.stopKey)
   end
 end
 
-local function ClampTargetSize(cf, w, h)
-  if not cf then return w, h end
+local function CaptureBaseSize(frame, force)
+  if not CanAccessFrame(frame) or type(frame.GetSize) ~= "function" then return end
+  local current = GetState(frame)
+  if current.ownsTemporarySize and not force then return end
 
-  if cf.GetMinResize then
-    local minW, minH = cf:GetMinResize()
-    if minW and minW > 0 and w < minW then w = minW end
-    if minH and minH > 0 and h < minH then h = minH end
+  local width, height = frame:GetSize()
+  width, height = NS.SafeNumber(width), NS.SafeNumber(height)
+  if width and height and width > 0 and height > 0 then
+    current.baseW = width
+    current.baseH = height
   end
-
-  if cf.GetMaxResize then
-    local maxW, maxH = cf:GetMaxResize()
-    if maxW and maxW > 0 and w > maxW then w = maxW end
-    if maxH and maxH > 0 and h > maxH then h = maxH end
-  end
-
-  return w, h
 end
 
-local function ComputeSnapDuration(startW, startH, targetW, targetH)
-  local dx = targetW - startW
-  local dy = targetH - startH
-  local dist = math.sqrt(dx * dx + dy * dy)
-  local dur = dist / SNAP_PIXELS_PER_SEC
-  if dur < SNAP_MIN_DURATION then return SNAP_MIN_DURATION end
-  if dur > SNAP_MAX_DURATION then return SNAP_MAX_DURATION end
-  return dur
+local function ClampTargetSize(frame, width, height)
+  if not CanAccessFrame(frame) then return width, height end
+
+  if type(frame.GetResizeBounds) == "function" then
+    local minWidth, minHeight, maxWidth, maxHeight = frame:GetResizeBounds()
+    minWidth, minHeight = NS.SafeNumber(minWidth), NS.SafeNumber(minHeight)
+    maxWidth, maxHeight = NS.SafeNumber(maxWidth), NS.SafeNumber(maxHeight)
+    if minWidth and width < minWidth then width = minWidth end
+    if minHeight and height < minHeight then height = minHeight end
+    if maxWidth and maxWidth > 0 and width > maxWidth then width = maxWidth end
+    if maxHeight and maxHeight > 0 and height > maxHeight then height = maxHeight end
+    return width, height
+  end
+
+  if frame.GetMinResize then
+    local minWidth, minHeight = frame:GetMinResize()
+    minWidth, minHeight = NS.SafeNumber(minWidth), NS.SafeNumber(minHeight)
+    if minWidth and minWidth > 0 and width < minWidth then width = minWidth end
+    if minHeight and minHeight > 0 and height < minHeight then height = minHeight end
+  end
+  if frame.GetMaxResize then
+    local maxWidth, maxHeight = frame:GetMaxResize()
+    maxWidth, maxHeight = NS.SafeNumber(maxWidth), NS.SafeNumber(maxHeight)
+    if maxWidth and maxWidth > 0 and width > maxWidth then width = maxWidth end
+    if maxHeight and maxHeight > 0 and height > maxHeight then height = maxHeight end
+  end
+  return width, height
 end
 
-local function QueueSnapAfterCombat(core, cf)
-  local st = GetState(cf)
-  if st.snapDeferred then return end
-  st.snapDeferred = true
+local function ComputeSnapDuration(startWidth, startHeight, targetWidth, targetHeight)
+  local dx = targetWidth - startWidth
+  local dy = targetHeight - startHeight
+  local distance = math.sqrt(dx * dx + dy * dy)
+  local duration = distance / SNAP_PIXELS_PER_SEC
+  if duration < SNAP_MIN_DURATION then return SNAP_MIN_DURATION end
+  if duration > SNAP_MAX_DURATION then return SNAP_MAX_DURATION end
+  return duration
+end
 
-  core:Defer(function()
-    st.snapDeferred = false
-    if not IsEnabled(core) then return end
-    if st.baseW and st.baseH then
-      AnimateSize(core, cf, st.baseW, st.baseH)
+local function CompleteOwnedResize(frame, width, height)
+  local current = GetState(frame)
+  current.ownsTemporarySize = false
+  current.baseW = width
+  current.baseH = height
+end
+
+local function QueueSnapAfterCombat(core, frame)
+  local current = GetState(frame)
+  core:DeferKeyed(current.snapKey, function(targetFrame)
+    if not IsEnabled(core) or not IsActiveFrame(targetFrame) then return end
+    if current.ownsTemporarySize and current.baseW and current.baseH then
+      AnimateSize(core, targetFrame, current.baseW, current.baseH)
     end
-  end)
+  end, frame)
 end
 
-AnimateSize = function(core, cf, targetW, targetH)
-  if not IsEnabled(core) or not cf then return end
+AnimateSize = function(core, frame, targetWidth, targetHeight)
+  if not IsEnabled(core) or not IsActiveFrame(frame) or not CanAccessFrame(frame) then return end
 
-  local st = GetState(cf)
-  if st.anim then
-    st.anim:Cancel()
-    st.anim = nil
+  local current = GetState(frame)
+  if current.anim then
+    current.anim:Cancel()
+    current.anim = nil
   end
 
   if InCombatLockdown() then
-    QueueSnapAfterCombat(core, cf)
+    QueueSnapAfterCombat(core, frame)
     return
   end
 
-  local startW, startH = cf:GetSize()
-  if not startW or not startH then return end
-  targetW, targetH = ClampTargetSize(cf, targetW, targetH)
+  local startWidth, startHeight = frame:GetSize()
+  startWidth, startHeight = NS.SafeNumber(startWidth), NS.SafeNumber(startHeight)
+  if not startWidth or not startHeight then return end
+  targetWidth, targetHeight = ClampTargetSize(frame, targetWidth, targetHeight)
 
-  if math.abs(startW - targetW) < 0.5 and math.abs(startH - targetH) < 0.5 then
-    cf:SetSize(targetW, targetH)
+  if math.abs(startWidth - targetWidth) < 0.5 and math.abs(startHeight - targetHeight) < 0.5 then
+    frame:SetSize(targetWidth, targetHeight)
+    CompleteOwnedResize(frame, targetWidth, targetHeight)
     return
   end
 
-  local duration = ComputeSnapDuration(startW, startH, targetW, targetH)
+  local duration = ComputeSnapDuration(startWidth, startHeight, targetWidth, targetHeight)
   local startTime = GetTime()
-
   local ticker
+
   ticker = C_Timer.NewTicker(SNAP_ANIM_STEP, function()
-    if not IsEnabled(core) then
+    if not IsEnabled(core) or not IsActiveFrame(frame) then
       ticker:Cancel()
-      st.anim = nil
+      current.anim = nil
       return
     end
 
     if InCombatLockdown() then
       ticker:Cancel()
-      st.anim = nil
-      QueueSnapAfterCombat(core, cf)
+      current.anim = nil
+      QueueSnapAfterCombat(core, frame)
       return
     end
 
     local progress = (GetTime() - startTime) / duration
     if progress >= 1 then
-      cf:SetSize(targetW, targetH)
+      frame:SetSize(targetWidth, targetHeight)
       ticker:Cancel()
-      st.anim = nil
-      if cf.ScrollToBottom then pcall(cf.ScrollToBottom, cf) end
+      current.anim = nil
+      CompleteOwnedResize(frame, targetWidth, targetHeight)
+      if frame.ScrollToBottom then pcall(frame.ScrollToBottom, frame) end
       return
     end
 
-    -- Quartic ease-out for a soft settle.
     progress = 1 - (1 - progress) ^ 4
-    local w = startW + (targetW - startW) * progress
-    local h = startH + (targetH - startH) * progress
-    cf:SetSize(w, h)
+    frame:SetSize(
+      startWidth + (targetWidth - startWidth) * progress,
+      startHeight + (targetHeight - startHeight) * progress
+    )
   end)
 
-  st.anim = ticker
+  current.anim = ticker
 end
 
-local function StartSnapTimer(core, cf)
-  local st = GetState(cf)
-  StopSnapTimer(cf)
+local function StartSnapTimer(core, frame)
+  local current = GetState(frame)
+  StopSnapTimer(core, frame)
 
-  st.timer = C_Timer.NewTimer(SNAP_DELAY, function()
-    st.timer = nil
-    if not IsEnabled(core) then return end
+  current.timer = C_Timer.NewTimer(SNAP_DELAY, function()
+    current.timer = nil
+    if not IsEnabled(core) or not IsActiveFrame(frame) then return end
 
     if InCombatLockdown() then
-      QueueSnapAfterCombat(core, cf)
-    elseif st.baseW and st.baseH then
-      AnimateSize(core, cf, st.baseW, st.baseH)
+      QueueSnapAfterCombat(core, frame)
+    elseif current.ownsTemporarySize and current.baseW and current.baseH then
+      AnimateSize(core, frame, current.baseW, current.baseH)
     end
   end)
 end
 
-local function OnResizeStart(core, cf, direction)
-  if not IsEnabled(core) or not cf or not cf.StartSizing then return end
+local function OnResizeStart(core, frame, direction)
+  if not IsEnabled(core) or not IsActiveFrame(frame) or not frame.StartSizing then return end
   if InCombatLockdown() then return end
 
-  local st = GetState(cf)
-  StopSnapTimer(cf)
-
-  if not st.baseW or not st.baseH then
-    st.baseW, st.baseH = cf:GetSize()
+  local current = GetState(frame)
+  StopSnapTimer(core, frame)
+  if not current.ownsTemporarySize then
+    CaptureBaseSize(frame, true)
+    current.ownsTemporarySize = true
   end
 
-  cf.__rothResizing = true
-  if RothChat.UpdateHoverState then RothChat:UpdateHoverState(cf) end
-  cf:StartSizing(direction or "BOTTOMLEFT")
+  frame.__rothResizing = true
+  if RothChat.UpdateHoverState then RothChat:UpdateHoverState(frame) end
+  frame:StartSizing(direction or "BOTTOMLEFT")
 end
 
-local function OnResizeStop(core, cf)
-  if not cf then return end
-
-  cf:StopMovingOrSizing()
-  cf.__rothResizing = nil
-  if RothChat.UpdateHoverState then RothChat:UpdateHoverState(cf) end
-
-  if IsEnabled(core) then
-    StartSnapTimer(core, cf)
+local function OnResizeStop(core, frame)
+  if not CanAccessFrame(frame) then return end
+  local function Stop(targetFrame)
+    if not CanAccessFrame(targetFrame) then return end
+    targetFrame:StopMovingOrSizing()
+    targetFrame.__rothResizing = nil
+    if RothChat.UpdateHoverState then RothChat:UpdateHoverState(targetFrame) end
+    if IsEnabled(core) then StartSnapTimer(core, targetFrame) end
+  end
+  if InCombatLockdown() then
+    local current = GetState(frame)
+    core:DeferKeyed(current.stopKey, function(targetFrame)
+      if IsEnabled(core) then Stop(targetFrame) end
+    end, frame)
+  else
+    Stop(frame)
   end
 end
 
-local function RegisterGripHover(core, cf, grip)
-  if core.RegisterHoverFrame then
-    core:RegisterHoverFrame(cf, grip)
-  end
+local function RegisterGripHover(core, frame, grip)
+  if core.RegisterHoverFrame then core:RegisterHoverFrame(frame, grip) end
 end
 
-local function CreateGrip(core, cf)
-  local existing = grips[cf]
+local function CreateGrip(core, frame)
+  local existing = grips[frame]
   if existing then
-    RegisterGripHover(core, cf, existing)
+    RegisterGripHover(core, frame, existing)
     existing:Show()
     return existing
   end
 
-  local g = CreateFrame("Button", nil, cf)
-  g:SetSize(GRIP_SIZE, GRIP_SIZE)
-  g:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 0, 0)
-  g:SetFrameLevel(cf:GetFrameLevel() + 10)
-  g:EnableMouse(true)
-  g:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
+  local grip = CreateFrame("Button", nil, frame)
+  grip:SetSize(GRIP_SIZE, GRIP_SIZE)
+  grip:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+  grip:SetFrameLevel(frame:GetFrameLevel() + 10)
+  grip:EnableMouse(true)
+  grip:RegisterForClicks("LeftButtonUp", "LeftButtonDown")
 
-  local tex = g:CreateTexture(nil, "OVERLAY")
-  tex:SetAllPoints()
-  tex:SetTexture("Interface\\AddOns\\RothChat\\Assets\\resize_grip.tga")
-  tex:SetTexCoord(1, 0, 0, 1)
-  tex:SetVertexColor(1, 1, 1, 0.5)
-  g.tex = tex
+  local texture = grip:CreateTexture(nil, "OVERLAY")
+  texture:SetAllPoints()
+  texture:SetTexture("Interface\\AddOns\\RothChat\\Assets\\resize_grip.tga")
+  texture:SetTexCoord(1, 0, 0, 1)
+  texture:SetVertexColor(1, 1, 1, 0.5)
+  grip.tex = texture
 
-  if not tex:GetTexture() then
-    local fs = g:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    fs:SetPoint("BOTTOMLEFT", 2, 2)
-    fs:SetText("<")
-    fs:SetTextColor(1, 1, 1, 0.5)
+  if not texture:GetTexture() then
+    local fallback = grip:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fallback:SetPoint("BOTTOMLEFT", 2, 2)
+    fallback:SetText("<")
+    fallback:SetTextColor(1, 1, 1, 0.5)
   end
 
-  g:SetScript("OnMouseDown", function()
-    OnResizeStart(core, cf, "BOTTOMLEFT")
+  grip:SetScript("OnMouseDown", function() OnResizeStart(core, frame, "BOTTOMLEFT") end)
+  grip:SetScript("OnMouseUp", function()
+    if frame.__rothResizing then OnResizeStop(core, frame) end
   end)
-
-  g:SetScript("OnMouseUp", function()
-    if cf.__rothResizing then
-      OnResizeStop(core, cf)
-    end
-  end)
-
-  g:SetScript("OnEnter", function()
-    if g.tex then g.tex:SetVertexColor(1, 1, 1, 1) end
+  grip:SetScript("OnEnter", function()
+    if grip.tex then grip.tex:SetVertexColor(1, 1, 1, 1) end
     if GameTooltip and not InCombatLockdown() then
-      GameTooltip:SetOwner(g, "ANCHOR_TOPLEFT")
+      GameTooltip:SetOwner(grip, "ANCHOR_TOPLEFT")
       GameTooltip:SetText("Drag corner to resize\nMain tab drag: up only\n(Snaps back in 30s)")
       GameTooltip:Show()
     end
   end)
-
-  g:SetScript("OnLeave", function()
-    if g.tex then g.tex:SetVertexColor(1, 1, 1, 0.5) end
+  grip:SetScript("OnLeave", function()
+    if grip.tex then grip.tex:SetVertexColor(1, 1, 1, 0.5) end
     if GameTooltip and not InCombatLockdown() then GameTooltip:Hide() end
   end)
 
-  grips[cf] = g
-  RegisterGripHover(core, cf, g)
-  return g
+  grips[frame] = grip
+  RegisterGripHover(core, frame, grip)
+  return grip
 end
 
-local function HookMainTab(core, cf)
-  if not IsMainChatFrame(cf) then return end
-
-  local name = cf:GetName()
-  local tab = name and _G[name .. "Tab"]
+local function HookMainTab(core, frame)
+  if not IsMainChatFrame(frame) then return end
+  local name = frame:GetName()
+  if not NS.CanAccessValue(name) or type(name) ~= "string" then return end
+  local tab = _G[name .. "Tab"]
   if not tab or tab.__rothResizeHooked then return end
   tab.__rothResizeHooked = true
 
   tab:HookScript("OnMouseDown", function(_, button)
-    if not IsEnabled(core) or not IsMainChatFrame(cf) then return end
-    if InCombatLockdown() then return end
+    if not IsEnabled(core) or not IsMainChatFrame(frame) or InCombatLockdown() then return end
 
     local isLocked = false
     if FCF_GetChatWindowInfo then
-      local _, _, _, _, _, _, _, locked = FCF_GetChatWindowInfo(cf:GetID())
-      isLocked = locked and true or false
+      local _, _, _, _, _, _, _, locked = FCF_GetChatWindowInfo(frame:GetID())
+      if NS.CanAccessValue(locked) then isLocked = locked and true or false end
     end
 
     if button == "LeftButton" and not IsModifierKeyDown() and isLocked then
-      OnResizeStart(core, cf, "TOP")
+      OnResizeStart(core, frame, "TOP")
     end
   end)
 
   tab:HookScript("OnMouseUp", function(_, button)
-    if not IsEnabled(core) or not IsMainChatFrame(cf) then return end
-    if button == "LeftButton" and cf.__rothResizing then
-      OnResizeStop(core, cf)
-    end
+    if button == "LeftButton" and frame.__rothResizing then OnResizeStop(core, frame) end
   end)
 end
 
-local function EnsureFrame(core, cf)
-  if not cf or not cf.IsResizable or not cf:IsResizable() then return end
-  CreateGrip(core, cf):Show()
-  HookMainTab(core, cf)
+local function EnsureFrame(core, frame)
+  if not IsActiveFrame(frame) or not frame.IsResizable then return end
+  local resizable = frame:IsResizable()
+  if not NS.CanAccessValue(resizable) then return end
+  if resizable ~= true then return end
+  local current = GetState(frame)
+  if not current.ownsTemporarySize and not frame.__rothResizing then CaptureBaseSize(frame, true) end
+  CreateGrip(core, frame):Show()
+  HookMainTab(core, frame)
+end
+
+local function EnsureFrameSafely(core, frame)
+  if not IsActiveFrame(frame) then return end
+  if InCombatLockdown() then
+    local current = GetState(frame)
+    core:DeferKeyed(current.ensureKey, function(targetFrame)
+      if IsEnabled(core) then EnsureFrame(core, targetFrame) end
+    end, frame)
+  else
+    EnsureFrame(core, frame)
+  end
+end
+
+local function RestoreOwnedSize(core, frame)
+  local current = state[frame]
+  if not current or not current.ownsTemporarySize or not current.baseW or not current.baseH then return end
+
+  local function Restore(targetFrame)
+    if not IsEnabled(core) and CanAccessFrame(targetFrame) and targetFrame.SetSize then
+      local width, height = ClampTargetSize(targetFrame, current.baseW, current.baseH)
+      targetFrame:SetSize(width, height)
+      CompleteOwnedResize(targetFrame, width, height)
+    end
+  end
+
+  if InCombatLockdown() then
+    core:DeferKeyed(current.restoreKey, Restore, frame)
+  else
+    Restore(frame)
+  end
+end
+
+local function CleanupDisabledFrame(core, frame)
+  local current = state[frame]
+  if not current then return end
+  local function Cleanup(targetFrame)
+    if IsEnabled(core) or not CanAccessFrame(targetFrame) then return end
+    if targetFrame.__rothResizing then
+      targetFrame:StopMovingOrSizing()
+      targetFrame.__rothResizing = nil
+    end
+    RestoreOwnedSize(core, targetFrame)
+  end
+  if InCombatLockdown() then
+    core:DeferKeyed(current.restoreKey, Cleanup, frame)
+  else
+    Cleanup(frame)
+  end
 end
 
 local function RegisterLifecycleListeners(core)
@@ -313,21 +408,37 @@ local function RegisterLifecycleListeners(core)
   lifecycleListenersRegistered = true
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame)
+    if IsEnabled(core2) then EnsureFrameSafely(core2, chatFrame) end
+  end, M)
+
+  core:On("CHAT_LAYOUT_CHANGED", function(_, core2)
     if not IsEnabled(core2) then return end
-    EnsureFrame(core2, chatFrame)
+    if InCombatLockdown() then
+      core2:DeferKeyed(M.__applyDeferredKey, function()
+        if not IsEnabled(core2) then return end
+        for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core2, chatFrame) end
+      end)
+    else
+      for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core2, chatFrame) end
+    end
   end, M)
 
   core:On("CHAT_FRAME_CLOSED", function(_, core2, chatFrame)
-    if not chatFrame then return end
-    StopSnapTimer(chatFrame)
+    if not CanAccessFrame(chatFrame) then return end
+    local current = state[chatFrame]
+    if current then
+      core2:CancelDeferred(current.restoreKey)
+      core2:CancelDeferred(current.ensureKey)
+    end
+    StopSnapTimer(core2, chatFrame)
     chatFrame.__rothResizing = nil
+
     local grip = grips[chatFrame]
     if grip then
-      if core2.UnregisterHoverFrame then
-        core2:UnregisterHoverFrame(chatFrame, grip)
-      end
+      if core2.UnregisterHoverFrame then core2:UnregisterHoverFrame(chatFrame, grip) end
       grip:Hide()
     end
+    state[chatFrame] = nil
   end, M)
 end
 
@@ -337,6 +448,10 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
+  core:CancelDeferred(M.__applyDeferredKey)
+  for frame, current in pairs(state) do
+    core:CancelDeferred(current.restoreKey)
+  end
   resizeActive = true
   lifecycleListenersRegistered = false
   core:EnsureChatLifecycleHooks()
@@ -344,13 +459,11 @@ function M:OnEnable(core)
 
   local function ApplyAll()
     if not resizeActive then return end
-    for _, cf in ipairs(NS.GetChatFrames()) do
-      EnsureFrame(core, cf)
-    end
+    for _, frame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core, frame) end
   end
 
   if InCombatLockdown() then
-    core:Defer(function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if IsEnabled(core) then ApplyAll() end
     end)
   else
@@ -361,29 +474,30 @@ end
 function M:OnDisable(core)
   resizeActive = false
   lifecycleListenersRegistered = false
+  core:CancelDeferred(M.__applyDeferredKey)
 
-  for cf, grip in pairs(grips) do
-    if core.UnregisterHoverFrame then
-      core:UnregisterHoverFrame(cf, grip)
-    end
+  for frame, grip in pairs(grips) do
+    if CanAccessFrame(frame) and core.UnregisterHoverFrame then core:UnregisterHoverFrame(frame, grip) end
     grip:Hide()
   end
 
-  for cf in pairs(state) do
-    StopSnapTimer(cf)
-    GetState(cf).snapDeferred = false
-    if cf.__rothResizing then
-      cf:StopMovingOrSizing()
-      cf.__rothResizing = nil
-    end
+  for frame, current in pairs(state) do
+    StopSnapTimer(core, frame)
+    core:CancelDeferred(current.ensureKey)
+    CleanupDisabledFrame(core, frame)
   end
 end
 
 function M:Refresh(core)
   if not IsEnabled(core) then return end
-  for _, cf in ipairs(NS.GetChatFrames()) do
-    EnsureFrame(core, cf)
+  if InCombatLockdown() then
+    core:DeferKeyed(M.__applyDeferredKey, function()
+      if not IsEnabled(core) then return end
+      for _, frame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core, frame) end
+    end)
+    return
   end
+  for _, frame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core, frame) end
 end
 
 RothChat:RegisterModule(M)
