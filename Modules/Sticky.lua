@@ -26,7 +26,7 @@ function M:OnEnable(core)
     local info = ChatTypeInfo[type]
     if info then
       if originalSticky[type] == nil then
-        originalSticky[type] = info.sticky
+          originalSticky[type] = { value = info.sticky }
       end
       info.sticky = 1
     end
@@ -36,10 +36,11 @@ end
 function M:OnDisable(core)
   for _, type in ipairs(STICKY_TYPES) do
     local info = ChatTypeInfo[type]
-    if info and originalSticky[type] ~= nil then
-      info.sticky = originalSticky[type]
-      originalSticky[type] = nil
+    local snapshot = originalSticky[type]
+    if info and snapshot and info.sticky == 1 then
+      info.sticky = snapshot.value
     end
+    originalSticky[type] = nil
   end
 end
 

@@ -45,7 +45,7 @@ function M:OnEnable(core)
     local info = ChatTypeInfo and ChatTypeInfo[chatType]
     if info then
       if originalColorByClass[chatType] == nil then
-        originalColorByClass[chatType] = info.colorNameByClass
+          originalColorByClass[chatType] = { value = info.colorNameByClass }
       end
       SetChatColorNameByClass(chatType, true)
     end
@@ -55,9 +55,14 @@ end
 function M:OnDisable(core)
   if type(SetChatColorNameByClass) ~= "function" then return end
 
-  for chatType, wasEnabled in pairs(originalColorByClass) do
-    if ChatTypeInfo and ChatTypeInfo[chatType] then
-      SetChatColorNameByClass(chatType, wasEnabled and true or false)
+  for chatType, snapshot in pairs(originalColorByClass) do
+    local info = ChatTypeInfo and ChatTypeInfo[chatType]
+    if info and snapshot and info.colorNameByClass == true then
+      -- Let Blizzard update its chat color state, then preserve an original nil
+      -- table value exactly. The proxy table is also what class color rendering
+      -- reads on the frame side.
+      SetChatColorNameByClass(chatType, snapshot.value == true)
+      info.colorNameByClass = snapshot.value
     end
     originalColorByClass[chatType] = nil
   end

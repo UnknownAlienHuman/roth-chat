@@ -15,8 +15,11 @@ local M = {
 }
 
 local state = { perChat = {} }
+local wheelSnapshots = setmetatable({}, { __mode = "k" })
 local controlsActive = false
 local lifecycleListenersRegistered = false
+local restoreDeferred = false
+local refreshDeferred = false
 
 local UpdateForChat
 local RegisterHoverFrame
@@ -24,6 +27,53 @@ local UnregisterHoverFrame
 
 local function ControlsEnabled()
   return controlsActive
+end
+
+local function CanUseObject(object)
+  return object ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(object))
+end
+
+local function CaptureWheelOwnership(chatFrame)
+  if not CanUseObject(chatFrame) or wheelSnapshots[chatFrame] then return end
+  local snapshot = {}
+  if type(chatFrame.GetScript) == "function" then
+    local ok, script = pcall(chatFrame.GetScript, chatFrame, "OnMouseWheel")
+    if ok then snapshot.script = script end
+  end
+  if type(chatFrame.IsMouseWheelEnabled) == "function" then
+    local ok, enabled = pcall(chatFrame.IsMouseWheelEnabled, chatFrame)
+    if ok and (not NS.CanAccessValue or NS.CanAccessValue(enabled)) then
+      snapshot.mouseWheelEnabled = enabled and true or false
+    end
+  end
+  if type(chatFrame.GetClipsChildren) == "function" then
+    local ok, clips = pcall(chatFrame.GetClipsChildren, chatFrame)
+    if ok and (not NS.CanAccessValue or NS.CanAccessValue(clips)) then
+      snapshot.clipsChildren = clips and true or false
+    end
+  end
+  wheelSnapshots[chatFrame] = snapshot
+end
+
+local function RestoreWheelOwnership(chatFrame)
+  local snapshot = wheelSnapshots[chatFrame]
+  if not snapshot or not CanUseObject(chatFrame) then return false end
+
+  if type(chatFrame.GetScript) == "function" and type(chatFrame.SetScript) == "function" then
+    local ok, current = pcall(chatFrame.GetScript, chatFrame, "OnMouseWheel")
+    if ok and current == chatFrame.__rothMouseWheelHandler then
+      pcall(chatFrame.SetScript, chatFrame, "OnMouseWheel", snapshot.script)
+    end
+  end
+  if snapshot.mouseWheelEnabled ~= nil and type(chatFrame.EnableMouseWheel) == "function" then
+    pcall(chatFrame.EnableMouseWheel, chatFrame, snapshot.mouseWheelEnabled)
+  end
+  if snapshot.clipsChildren ~= nil and type(chatFrame.SetClipsChildren) == "function" then
+    pcall(chatFrame.SetClipsChildren, chatFrame, snapshot.clipsChildren)
+  end
+
+  wheelSnapshots[chatFrame] = nil
+  return true
 end
 
 local function GetOrCreateChatState(cf)
@@ -72,7 +122,7 @@ local function RemoveFrame(list, frame)
 end
 
 local function SetFrameMouseForVisibility(frame, visible)
-  if not frame or not frame.EnableMouse then return end
+  if not CanUseObject(frame) or not frame.EnableMouse then return end
   if frame.__rothKeepMouseEnabled then
     frame:EnableMouse(true)
   else
@@ -81,14 +131,14 @@ local function SetFrameMouseForVisibility(frame, visible)
 end
 
 local function GetFrameRect(frame)
-  if not frame or type(frame.GetRect) ~= "function" then return nil end
+  if not CanUseObject(frame) or type(frame.GetRect) ~= "function" then return nil end
   local left, bottom, width, height = frame:GetRect()
   if not left or not bottom or not width or not height or width <= 0 or height <= 0 then return nil end
   return left, bottom, left + width, bottom + height
 end
 
 local function IsInteractableChatFrame(cf)
-  if not cf or not cf:IsShown() then return false end
+  if not CanUseObject(cf) or not cf:IsShown() then return false end
 
   if NS.IsDockedChatFrame and NS.IsDockedChatFrame(cf) then
     local selected = NS.GetSelectedDockChatFrame and NS.GetSelectedDockChatFrame()
@@ -104,20 +154,21 @@ local function IsAnyMouseOver(cf, st)
 
   local name = cf.GetName and cf:GetName()
   local editBox = name and _G[name .. "EditBox"]
-  if editBox then
+  if CanUseObject(editBox) then
     local ok, activeEditBox = pcall(function()
       return ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow()
     end)
-    if (ok and activeEditBox == editBox) or (editBox.HasFocus and editBox:HasFocus()) then
+    if ((ok and CanUseObject(activeEditBox) and activeEditBox == editBox)
+      or (editBox.HasFocus and editBox:HasFocus())) then
       return true
     end
   end
 
-  if st.hotspot and st.hotspot:IsMouseOver() then return true end
+  if CanUseObject(st.hotspot) and st.hotspot:IsMouseOver() then return true end
   if cf:IsMouseOver() then return true end
-  if st.button and st.button:IsMouseOver() then return true end
+  if CanUseObject(st.button) and st.button:IsMouseOver() then return true end
   for _, frame in ipairs(st.frames) do
-    if frame and frame:IsMouseOver() then return true end
+    if CanUseObject(frame) and frame:IsMouseOver() then return true end
   end
   return false
 end
@@ -139,7 +190,7 @@ end
 
 local function RequestHotspotBoundsUpdate(core, cf)
   local st = GetOrCreateChatState(cf)
-  if not st.hotspot then return end
+  if not CanUseObject(st.hotspot) or not CanUseObject(cf) then return end
 
   NS.RunNextFrame(st._boundsScheduleKey, function()
     if not ControlsEnabled() or not IsInteractableChatFrame(cf) then return end
@@ -174,8 +225,9 @@ local function RequestHotspotBoundsUpdate(core, cf)
 end
 
 local function CreateHotspot(core, cf)
+  if not CanUseObject(cf) then return nil end
   local st = GetOrCreateChatState(cf)
-  if st.hotspot then return st.hotspot end
+  if st.hotspot then return CanUseObject(st.hotspot) and st.hotspot or nil end
 
   local hotspot = CreateFrame("Frame", nil, UIParent)
   hotspot:SetFrameStrata("HIGH")
@@ -210,7 +262,7 @@ local function SetControlsVisible(core, cf, visible)
   local target = visible and shownAlpha or hiddenAlpha
 
   for _, frame in ipairs(st.frames) do
-    if frame and frame.SetAlpha then
+    if CanUseObject(frame) and frame.SetAlpha then
       if frame.__rothKeepMouseEnabled then
         frame:SetAlpha(1)
         SetFrameMouseForVisibility(frame, true)
@@ -221,7 +273,7 @@ local function SetControlsVisible(core, cf, visible)
     end
   end
 
-  if st.button and st.button.SetAlpha then
+  if CanUseObject(st.button) and st.button.SetAlpha then
     local showPin = visible and ControlsEnabled()
     local buttonTarget = showPin and 1 or 0
     NS.FadeTo(st.button, buttonTarget, duration)
@@ -243,22 +295,22 @@ UpdateForChat = function(core, cf)
   if not IsInteractableChatFrame(cf) then
     st.hovering = false
     SetControlsVisible(core, cf, false)
-    if st.hotspot then
+    if CanUseObject(st.hotspot) then
       st.hotspot:Hide()
       st.hotspot:EnableMouse(false)
     end
-    if st.button then st.button:EnableMouse(false) end
+    if CanUseObject(st.button) then st.button:EnableMouse(false) end
     return
   end
 
   if st.copyOverlayVisible then
     st.hovering = false
     SetControlsVisible(core, cf, false)
-    if st.hotspot then
+    if CanUseObject(st.hotspot) then
       st.hotspot:Hide()
       st.hotspot:EnableMouse(false)
     end
-    if st.button then st.button:EnableMouse(false) end
+    if CanUseObject(st.button) then st.button:EnableMouse(false) end
 
     if st.lastVisible ~= false or st.lastPinned ~= st.pinned or st.lastHovering ~= st.hovering then
       st.lastVisible = false
@@ -269,11 +321,11 @@ UpdateForChat = function(core, cf)
     return
   end
 
-  if st.hotspot then st.hotspot:Show() end
+  if CanUseObject(st.hotspot) then st.hotspot:Show() end
 
   if not ControlsEnabled() then
     SetControlsVisible(core, cf, true)
-    if st.hotspot then st.hotspot:EnableMouse(false) end
+    if CanUseObject(st.hotspot) then st.hotspot:EnableMouse(false) end
     return
   end
 
@@ -281,7 +333,7 @@ UpdateForChat = function(core, cf)
   SetControlsVisible(core, cf, visible)
 
   local active = st.pinned or st.hovering
-  if st.hotspot then st.hotspot:EnableMouse(not active) end
+  if CanUseObject(st.hotspot) then st.hotspot:EnableMouse(not active) end
 
   if st.lastVisible ~= visible or st.lastPinned ~= st.pinned or st.lastHovering ~= st.hovering then
     st.lastVisible = visible
@@ -292,8 +344,9 @@ UpdateForChat = function(core, cf)
 end
 
 local function CreatePinButton(core, cf)
+  if not CanUseObject(cf) then return nil end
   local st = GetOrCreateChatState(cf)
-  if st.button then return st.button end
+  if st.button then return CanUseObject(st.button) and st.button or nil end
 
   local parent = st.hotspot or CreateHotspot(core, cf)
   local button = CreateFrame("Button", nil, parent)
@@ -336,6 +389,7 @@ local function CreatePinButton(core, cf)
 end
 
 local function HookHover(core, cf)
+  if not CanUseObject(cf) then return end
   if cf.__rothControlsHooked then return end
   cf.__rothControlsHooked = true
 
@@ -354,8 +408,8 @@ local function outCubic(t, b, c, d)
   return c * (t ^ 3 + 1) + b
 end
 
-local function ResetSmoothScroll(cf)
-  if not cf then return end
+local function ResetSmoothScroll(cf, restoreContainer)
+  if not CanUseObject(cf) then return end
   local scrollFrame = cf.__rothSmoothScroll
   if scrollFrame then
     scrollFrame.offset = 0
@@ -364,8 +418,8 @@ local function ResetSmoothScroll(cf)
     scrollFrame:Hide()
   end
 
-  local container = cf.FontStringContainer
-  if container then
+  local container = restoreContainer == false and nil or cf.FontStringContainer
+  if container and CanUseObject(container) then
     container:ClearAllPoints()
     container:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, 0)
     container:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", 0, 0)
@@ -374,7 +428,8 @@ end
 
 local function HandleMouseWheel(core, self, delta)
   if not ControlsEnabled() then
-    local original = self.__rothOriginalMouseWheelScript
+    local snapshot = wheelSnapshots[self]
+    local original = snapshot and snapshot.script
     if original then original(self, delta) end
     return
   end
@@ -433,12 +488,12 @@ local function HandleMouseWheel(core, self, delta)
 end
 
 local function HookScroll(core, cf)
+  if not CanUseObject(cf) then return end
+  CaptureWheelOwnership(cf)
+  if not wheelSnapshots[cf] then return end
+
   if not cf.__rothScrollHooked then
     cf.__rothScrollHooked = true
-
-    if type(cf.GetClipsChildren) == "function" then
-      cf.__rothOriginalClipsChildren = cf:GetClipsChildren()
-    end
 
     local container = cf.FontStringContainer
     local scrollFrame = CreateFrame("Frame", nil, cf)
@@ -450,6 +505,10 @@ local function HookScroll(core, cf)
     scrollFrame:Hide()
 
     scrollFrame:SetScript("OnUpdate", function(frame)
+      if not controlsActive then
+        frame:Hide()
+        return
+      end
       if not container then
         frame:Hide()
         return
@@ -474,18 +533,24 @@ local function HookScroll(core, cf)
     end
   end
 
-  cf:EnableMouseWheel(true)
-  cf:SetClipsChildren(true)
+  if type(cf.EnableMouseWheel) == "function" then cf:EnableMouseWheel(true) end
+  if type(cf.SetClipsChildren) == "function" then cf:SetClipsChildren(true) end
 
   local current = cf:GetScript("OnMouseWheel")
   if current ~= cf.__rothMouseWheelHandler then
-    cf.__rothOriginalMouseWheelScript = current
+    -- If another owner replaced the handler while Controls was active, keep
+    -- that current script as the delegate and restore target on disable.
+    local snapshot = wheelSnapshots[cf]
+    if snapshot and cf.__rothScrollHandlerInstalled then snapshot.script = current end
     cf:SetScript("OnMouseWheel", cf.__rothMouseWheelHandler)
+    cf.__rothScrollHandlerInstalled = true
   end
 end
 
 local function OnSmoothScrollAddMessage(chatFrame)
   if not controlsActive then return end
+  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then return end
+  if not CanUseObject(chatFrame) then return end
   local core = M.core
   if not core or not core:Get("smoothScrollEnabled") or not chatFrame:IsVisible() then return end
   if type(chatFrame.GetScrollOffset) == "function" and chatFrame:GetScrollOffset() ~= 0 then return end
@@ -505,7 +570,7 @@ local function OnSmoothScrollAddMessage(chatFrame)
 end
 
 local function HookAccessoryHover(core, frame)
-  if not frame then return end
+  if not CanUseObject(frame) then return end
   frame.__rothHoverChats = frame.__rothHoverChats or {}
   if frame.__rothHoverHooked then return end
   frame.__rothHoverHooked = true
@@ -530,7 +595,7 @@ local function HookAccessoryHover(core, frame)
 end
 
 RegisterHoverFrame = function(core, cf, frame)
-  if not cf or not frame then return end
+  if not CanUseObject(cf) or not CanUseObject(frame) then return end
   local st = GetOrCreateChatState(cf)
   AddUnique(st.frames, frame)
   frame.__rothHoverChats = frame.__rothHoverChats or {}
@@ -541,7 +606,7 @@ RegisterHoverFrame = function(core, cf, frame)
 end
 
 UnregisterHoverFrame = function(core, cf, frame)
-  if not cf or not frame then return end
+  if not CanUseObject(cf) or not CanUseObject(frame) then return end
   local st = state.perChat[cf]
   if st then
     RemoveFrame(st.frames, frame)
@@ -553,6 +618,7 @@ UnregisterHoverFrame = function(core, cf, frame)
 end
 
 local function RegisterDefaultBlizzardFrames(core, cf)
+  if not CanUseObject(cf) then return end
   local st = GetOrCreateChatState(cf)
   local name = cf:GetName()
   if not name then return end
@@ -617,7 +683,7 @@ local function HookBlizzardFade(core)
 end
 
 local function EnsureChatFrameHandled(core, cf)
-  if not cf then return end
+  if not CanUseObject(cf) then return end
   CreateHotspot(core, cf)
   HookHover(core, cf)
   HookScroll(core, cf)
@@ -626,6 +692,16 @@ local function EnsureChatFrameHandled(core, cf)
 end
 
 local function RefreshAllChats(core)
+  if InCombatLockdown() then
+    if not refreshDeferred then
+      refreshDeferred = true
+      core:Defer(function()
+        refreshDeferred = false
+        if controlsActive then RefreshAllChats(core) end
+      end)
+    end
+    return
+  end
   for _, cf in ipairs(NS.GetChatFrames()) do
     EnsureChatFrameHandled(core, cf)
     local st = GetOrCreateChatState(cf)
@@ -653,6 +729,10 @@ local function RegisterLifecycleListeners(core)
 
   core:On("CHAT_FRAME_READY", function(_, core2, chatFrame, reason)
     if not ControlsEnabled() or not IsNamedChatFrame(chatFrame) then return end
+    if InCombatLockdown() then
+      RefreshAllChats(core2)
+      return
+    end
 
     if reason == "set_temporary_window_type" and chatFrame.isTemporary then
       ResetTransientState(GetOrCreateChatState(chatFrame))
@@ -668,6 +748,10 @@ local function RegisterLifecycleListeners(core)
 
   core:On("CHAT_FRAME_CLOSED", function(_, core2, chatFrame)
     if not ControlsEnabled() or not chatFrame then return end
+    if InCombatLockdown() then
+      RefreshAllChats(core2)
+      return
+    end
     local st = state.perChat[chatFrame]
     if st then
       ResetTransientState(st)
@@ -732,27 +816,40 @@ function M:OnDisable(core)
   core:UnregisterAddMessageHooks(self)
   NS.CancelScheduled(M)
 
-  for cf, st in pairs(state.perChat) do
-    ResetTransientState(st)
-    st.hovering = false
-    st.pinned = false
+  local function RestoreControlsState()
+    if controlsActive then return end
+    for cf, st in pairs(state.perChat) do
+      ResetTransientState(st)
+      st.hovering = false
+      st.pinned = false
 
-    ResetSmoothScroll(cf)
-    if cf.__rothOriginalClipsChildren ~= nil and cf.SetClipsChildren then
-      cf:SetClipsChildren(cf.__rothOriginalClipsChildren)
-    end
+      ResetSmoothScroll(cf)
+      RestoreWheelOwnership(cf)
 
-    SetControlsVisible(core, cf, true)
-    if st.button then
-      st.button:EnableMouse(false)
-      st.button:SetAlpha(0)
-    end
-    if st.hotspot then
-      st.hotspot:EnableMouse(false)
-      st.hotspot:Hide()
-    end
+      SetControlsVisible(core, cf, true)
+      if CanUseObject(st.button) then
+        st.button:EnableMouse(false)
+        st.button:SetAlpha(0)
+      end
+      if CanUseObject(st.hotspot) then
+        st.hotspot:EnableMouse(false)
+        st.hotspot:Hide()
+      end
 
-    core:Emit("CONTROLS_VISIBILITY", cf, true, false, false)
+      core:Emit("CONTROLS_VISIBILITY", cf, true, false, false)
+    end
+  end
+
+  if InCombatLockdown() then
+    if not restoreDeferred then
+      restoreDeferred = true
+      core:Defer(function()
+        restoreDeferred = false
+        RestoreControlsState()
+      end)
+    end
+  else
+    RestoreControlsState()
   end
 end
 

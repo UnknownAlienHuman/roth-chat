@@ -1,85 +1,34 @@
 # Roth Chat
 
-Roth Chat is a modular, immersive chat UI for World of Warcraft Midnight. It combines fading chat windows, a hidden-state message ticker, dock-aware controls, channel shortcuts, copy overlays, clickable URLs, persistent scrollback and optional styling.
+Roth Chat is a modular World of Warcraft Retail chat interface focused on a customizable appearance, fading chat, hover controls, a hidden-state ticker, channel shortcuts, copy tools, and bounded scrollback restoration. Blizzard continues to own message formatting, routing, rendering, and native chat history.
 
-## Compatibility
+## Current target
 
-- Retail: `12.1.0`
-- Interface: `120100`
-- Addon version: `1.1.1`
+- Retail build: `12.1.5.70688`
+- Expected interface number: `120105`
+- Addon version: `1.2.0`
 - SavedVariables: `RothChatDB`
-- Author: Neomorph
-- Verified source baseline: `12.1.0.69497` / `Gethe/wow-ui-source@027d26c3406d`
+- Current source snapshot checked: 2026-11-02, [`Gethe/wow-ui-source@d07eb00237d8891f153215db98a5df880a26cfe5`](https://github.com/Gethe/wow-ui-source/commit/d07eb00237d8891f153215db98a5df880a26cfe5)
+- Live-client validation: **NOT RUN**
 
-## Retail 12.1 chat safety
+The engineering references are pinned to [`wow-addon-engineering-kb@b03e1635d0ff8bcd6be4f4dfac589dafec4e5e83`](https://github.com/UnknownAlienHuman/wow-addon-engineering-kb/commit/b03e1635d0ff8bcd6be4f4dfac589dafec4e5e83) and the selectively reused PR5 changes at [`40c8fd59f9fab0a6701ae1b8203f3fb2f73c768f`](https://github.com/UnknownAlienHuman/roth-chat/commit/40c8fd59f9fab0a6701ae1b8203f3fb2f73c768f), based on [`main@3c995183626002965043e38a837346fb290acd8a`](https://github.com/UnknownAlienHuman/roth-chat/commit/3c995183626002965043e38a837346fb290acd8a). These pins identify review context; they do not imply runtime validation.
 
-Roth Chat uses one centralized message-filter dispatcher rather than stacking independent Blizzard filters for every module.
+## Features and settings
 
-- The dispatcher preserves the exact tuple it receives instead of hard-coding 14 or 19 fields.
-- A no-op module filter returns only `false`, leaving Blizzard's secure tuple untouched.
-- A text transformation replaces only visible `arg1` while preserving every remaining field, arity and `nil` position.
-- Chat text is gated through current value accessibility before comparison, formatting, copying, animation or persistence.
-- Filter callbacks are optional and stateless because Blizzard may skip addon callbacks for inaccessible values.
+Settings are exposed through Blizzard's Settings interface and the `/rothchat` entry point. The current presentation presets are **Minimal**, **Obsidian**, and **Ember**, with separate font and text-size presets. Other settings control fading and hover timing, the primary ticker frame and animation, chat-bar placement, scrolling, timestamps, cleaner behavior, URL handling, copy sources, and Restore limits.
 
-The verified 12.1 source discrepancy and live-client matrix are recorded in [`MIGRATION_12_1.md`](MIGRATION_12_1.md).
+Feature modules cover dock-aware controls, chat-bar shortcuts, style and color, resizing, timestamps, localized channel cleanup, alerts, sticky channels, URL copy, copy overlays, ticker playback, and Restore. The former `History` module has been removed. Restore is the sole addon persistence owner; old `RothChatDB.history` data is left untouched and no new History store is allocated.
 
-## Runtime lifecycle
+## Install
 
-Version `1.1.1` separates configured module enablement from actual runtime activation.
+Extract or rename the repository root so the installed directory is named `RothChat` and contains `RothChat.toc` directly. Place that directory in `World of Warcraft/_retail_/Interface/AddOns/`, enable Roth Chat, and reload the UI. Open settings with `/rothchat`.
 
-- `Init` is one-shot; `OnEnable` and `OnDisable` are idempotent activation boundaries.
-- Modules enabled after `PLAYER_LOGIN` receive their one-time login lifecycle notification.
-- Core removes owner listeners, message filters and `AddMessage` callbacks on disable, even when a module-specific cleanup path is incomplete.
-- Controls, ChatBar, Style, Resize, Restore and CopyOverlay attach to chat frames through the shared lifecycle router.
-- The ticker keeps a bounded queue and accepts only messages that arrive while its primary chat surface is hidden; messages already visible in normal chat are not replayed later.
-- Restore persists permanent chat-window identities only. Reused temporary whisper frames are excluded from durable scrollback.
+## Safety and architecture
 
-## Installation and usage
+Roth Chat uses one central owner for synchronous message filters and one for displayed-message observers. Filters preserve the exact tuple supplied by the client, including its arity and `nil` positions, and can change only visible text. Addon consumers receive accessible displayed text and safe colors; opaque trailing metadata is discarded. During chat messaging lockdown, Roth Chat drops content work and clears temporary copied content.
 
-Copy the `RothChat` directory into:
+The detailed ownership map and validation procedure are in [ARCHITECTURE.md](ARCHITECTURE.md) and [docs/VALIDATION.md](docs/VALIDATION.md). The pinned review of external chat implementations and its adoption boundaries remain in [RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md](RESEARCH_CHAT_IMPLEMENTATIONS_2026_08_29.md).
 
-```text
-World of Warcraft/_retail_/Interface/AddOns/
-```
+## Licensing
 
-Enable the addon and reload the UI. Use `/rothchat` to open its settings.
-
-## Main features
-
-- Glass-like fading chat presentation and hover controls
-- Configurable ticker for messages received while chat is hidden
-- Dock-aware ChatBar and channel shortcuts
-- Double-click copy overlay
-- Clickable URL handling with a copy popup
-- Bounded persistent scrollback through the `Restore` module
-- Timestamp, color, cleaner, alert, resize and sticky-channel modules
-
-`History.lua` remains intentionally disabled: `Restore.lua` is the single active persistence owner.
-
-## Verification
-
-The repository validation workflow performs:
-
-- Lua syntax parsing for addon, vendored library and test files;
-- a complete chat-filter tuple contract test;
-- module activation, owner-cleanup and late-login lifecycle tests;
-- URL transformation tests, including balanced punctuation and inaccessible values;
-- Cleaner localization and restoration tests;
-- TOC metadata and active load-path validation.
-
-Automated validation does not replace the in-game smoke matrix. Combat, forced chat restrictions, whisper/reply, temporary windows, dock transitions, module toggles, reload and logout/login persistence still require current Retail runtime testing before a packaged release.
-
-## Repository documentation
-
-- [`AGENT_GUIDE.md`](AGENT_GUIDE.md) — engineering invariants and validation rules
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — runtime ownership and data flow
-- [`CODE_INDEX.md`](CODE_INDEX.md) — subsystem map
-- [`CHANGELOG.md`](CHANGELOG.md) — release history
-- [`MIGRATION_12_1.md`](MIGRATION_12_1.md) — source evidence and runtime matrix
-- [`TODO.md`](TODO.md) — remaining release gates only
-
-## Dependencies and license
-
-The addon vendors LibStub, CallbackHandler-1.0 and LibSharedMedia-3.0 under `ThirdParty/`. Their notices must remain in the repository.
-
-Roth Chat is licensed under the [MIT License](LICENSE.md). The visual glass aesthetic and bundled Glass-derived textures retain the original MIT notice in [`ThirdParty/GLASS_LICENSE.txt`](ThirdParty/GLASS_LICENSE.txt).
+Roth Chat code is licensed under the [MIT License](LICENSE.md), except for vendored dependencies and separately attributed third-party material. LS: Glass assets and marked adaptations are Apache-2.0; original Glass assets are MIT. Their exact paths, source commits, and blob hashes are listed in [ThirdParty/ATTRIBUTIONS.md](ThirdParty/ATTRIBUTIONS.md). Keep both applicable Glass licenses and all vendored library notices with distributed copies.

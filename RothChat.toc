@@ -1,8 +1,8 @@
-## Interface: 120100
+## Interface: 120105
 ## Title: Roth Chat
 ## Notes: Modular immersive chat UI for Roth (Diablo-style).
 ## Author: Neomorph
-## Version: 1.1.1
+## Version: 1.2.0
 ## SavedVariables: RothChatDB
 ## Category-enUS: Chat
 ## Category-ruRU: Чат
@@ -13,7 +13,13 @@ ThirdParty\CallbackHandler-1.0\CallbackHandler-1.0.lua
 ThirdParty\LibSharedMedia-3.0\lib.xml
 
 Util.lua
+Platform.lua
+VisualPrimitives.lua
+ChatText.lua
 Core.lua
+CoreListeners.lua
+CoreDispatch.lua
+ChatLifecycle.lua
 
 # Modules
 Modules\Dock.lua
@@ -25,7 +31,6 @@ Modules\CopyOverlay.lua
 Modules\UrlCopy.lua
 Modules\Colors.lua
 Modules\Resize.lua
-# Modules\History.lua -- legacy, disabled (Restore handles persistence)
 Modules\Ticker.lua
 Modules\Timestamps.lua
 Modules\Cleaner.lua

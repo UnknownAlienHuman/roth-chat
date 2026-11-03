@@ -2,6 +2,53 @@
 
 All notable Roth Chat changes are recorded here.
 
+## 1.2.0 — 2026-11-02
+
+### Current Retail target and chat ownership
+
+- Target Retail build `12.1.5.70688` and interface `120105`.
+- Split ordinary safety/scheduling (`Util.lua`), current-client adapters (`Platform.lua`), applied decoration (`VisualPrimitives.lua`), internal listeners (`CoreListeners.lua`), filter/display dispatch (`CoreDispatch.lua`), and coalesced frame lifecycle routing (`ChatLifecycle.lua`) into explicit owners.
+- Folded Controls and Style ownership helpers into their owning modules and removed their standalone files.
+- Removed the legacy History module from the runtime; Restore remains the sole addon persistence owner. Existing `RothChatDB.history` data and obsolete profile keys are left untouched, with no new History table allocation.
+- Bound Restore v3 buckets to permanent-window configuration, cache fingerprints by layout revision, and keep unbound v1/v2 buckets in a bounded manual-recovery snapshot instead of replaying them into a potentially different window.
+- Coalesce and cancel combat-deferred layout work, restore owned Blizzard state on disable, and reuse decoration regions on re-enable.
+- Bound and rate-limit diagnostics without retaining raw errors or chat content.
+- Added Minimal, Obsidian, and Ember appearance presets.
+- Tightened accessibility and restriction handling across filter dispatch, Restore, copy, timestamp, URL, and alert paths; restriction entry clears pending/visible copied content rather than replaying it later.
+- Kept Blizzard's native chat history and message rendering as the owner; native `HistoryKeeper` is not replaced.
+
+### Validation status
+
+- Pinned current UI source and engineering references are recorded in `docs/VALIDATION.md`.
+- Live-client validation is **NOT RUN**. The target build and source reference do not constitute a runtime pass.
+
+## Historical audit — 2026-08-29
+
+The selectively reused work below is incorporated and revised in 1.2.0. Its schema-v2 and validation notes describe the earlier audit snapshot.
+
+### Structured chat text and persistence
+
+- Added `ChatText.lua` as the shared accessibility, durable-storage, timestamp and copy-normalization boundary.
+- Changed Restore to schema v2, storing timestamp metadata separately from timestamp-free durable message text.
+- Prevented duplicate timestamps in Restore-backed copy output.
+- Made `copyIncludeTimestamps=false` authoritative for Restore, message-buffer and rendered-font fallback sources.
+- Preserved legacy schema-v1 rows through lazy normalization without destructive SavedVariables migration.
+- Reconstructed replay timestamps only when the Timestamps module is currently active.
+- Preserved the previous second-resolution copy/export timestamp while keeping live display timestamps at minute resolution.
+- Replaced session-only account-name, BNet and censored-message handles before SavedVariables retention.
+
+### Verification and research
+
+- Added shared chat-text and timestamp integration contract tests.
+- Expanded Restore tests for schema v2, legacy rows, durable sanitation, replay with timestamps enabled/disabled and temporary-frame exclusion.
+- Added the existing Restore contract to the validation workflow.
+- Added `workflow_dispatch` and temporary audit-branch validation routing for exact-head checks; automatic triggers were later disabled, leaving the workflow manual-only.
+- Documented pinned Chattynator and Prat implementation traces, licensing boundaries and explicit adoption/rejection decisions.
+
+### Gate at the time of the audit
+
+- Rate-limited hot-path diagnostics and live Retail validation were pending in that snapshot. Version 1.2.0 implements bounded diagnostics; live Retail validation remains pending.
+
 ## 1.1.1 — 2026-08-28
 
 ### Runtime lifecycle

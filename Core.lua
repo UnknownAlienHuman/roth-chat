@@ -1,6 +1,4 @@
--- RothChat - core
--- Goal: Prat-like modularity with Glass-like immersion.
--- We do NOT copy Prat/Glass; this is a clean-room implementation.
+-- RothChat - configuration, module lifecycle and combat-deferred work.
 
 local ADDON_NAME, NS = ...
 
@@ -8,28 +6,24 @@ local RothChat = CreateFrame("Frame")
 _G.RothChat = RothChat
 
 RothChat.name = "RothChat"
-RothChat.version = "1.1.1"
+-- TOC metadata is the single release-version source.
+RothChat.version = "development"
+if _G.C_AddOns and type(_G.C_AddOns.GetAddOnMetadata) == "function" then
+  local ok, version = pcall(_G.C_AddOns.GetAddOnMetadata, ADDON_NAME, "Version")
+  if ok and NS.CanAccessValue(version) and type(version) == "string" and version ~= "" then
+    RothChat.version = version
+  end
+end
 
 RothChat.modules = {}        -- [moduleName] = moduleTable
 RothChat.moduleOrder = {}    -- ordered list
 RothChat.moduleState = {}    -- [moduleName] = runtime lifecycle state
-RothChat._moduleFilters = {} -- [moduleTable] = { [event] = { {callback, owner, priority}, ... } }
-RothChat._messageFilterState = {} -- [event] = { entries = { {callback, owner, priority}, ... }, dispatcher, registered }
-
--- Deferred operations that are unsafe in combat.
 RothChat._deferred = {}
+RothChat._deferredByKey = {}
+RothChat._deferredCount = 0
 RothChat._addonLoaded = false
 RothChat._addonEnabled = false
 RothChat._loginComplete = false
-RothChat._chatLifecycleHooked = false
-RothChat._chatLifecycleQueue = {
-  queued = false,
-  refreshAll = false,
-  layoutReason = nil,
-  frameReasons = {},
-  closedFrames = {},
-}
-RothChat._chatLifecycleScheduleKey = {}
 
 -- -----------------------------------------------------------------------------
 -- Saved variables
@@ -39,10 +33,6 @@ local DEFAULTS = {
   profile = {
     enabled = true,
     debug = false,
-
-    -- History / persistence
-    historyEnabled = false,
-    historyMaxEntries = 20000,
 
     -- Restore (persistent scrollback per chat window)
     restoreEnabled = true,
@@ -135,6 +125,24 @@ local STYLE_PRESETS = {
     styleBorderColor = "000000",
     timestampColor = "8E8E8E",
   },
+}
+STYLE_PRESETS.obsidian = {
+  label = "Obsidian",
+  styleBackground = true,
+  styleBackgroundAlpha = 0.30,
+  styleBackgroundColor = "080A12",
+  styleBorder = false,
+  styleBorderColor = "3D465A",
+  timestampColor = "9EA9BE",
+}
+STYLE_PRESETS.ember = {
+  label = "Ember",
+  styleBackground = true,
+  styleBackgroundAlpha = 0.42,
+  styleBackgroundColor = "110B0A",
+  styleBorder = true,
+  styleBorderColor = "6B4930",
+  timestampColor = "C59B63",
 }
 RothChat.STYLE_PRESETS = STYLE_PRESETS
 
@@ -238,132 +246,80 @@ function RothChat:ApplyTextSizePreset(presetName)
   self:Set("styleFontSize", p.styleFontSize)
 end
 
+-- Settings and SavedVariables share one normalization owner. Repair invalid
+-- values without replacing explicit false choices or valid custom media paths.
+local NUMBER_LIMITS = {
+  restoreMaxLinesPerChat = { 100, 5000, true },
+  immersionChatAlphaHidden = { 0, 1 }, immersionChatAlphaShown = { 0, 1 },
+  immersionFadeDuration = { 0, 5 }, immersionFadeInDuration = { 0, 5 }, immersionFadeOutDuration = { 0, 5 },
+  tickerSpeed = { 5, 100 }, hoverAlphaHidden = { 0, 1 }, hoverAlphaShown = { 0, 1 },
+  hoverFadeDuration = { 0, 5 }, hoverFadeInDuration = { 0, 5 }, hoverFadeOutDuration = { 0, 5 },
+  hoverFadeDelay = { 0, 60 }, hotspotPadding = { 0, 40 },
+  smoothScrollSpeed = { 1, 50 }, smoothScrollDuration = { 0.05, 1 },
+  copyMaxLines = { 50, 5000, true }, primaryChatIndex = { 1, 10, true },
+  chatBarAttachTo = { 1, 10, true }, chatBarButtonSize = { 12, 32, true }, chatBarSpacing = { 0, 16, true },
+  styleFontSize = { 8, 32, true }, styleBackgroundAlpha = { 0, 1 },
+}
+local ENUM_VALUES = {
+  immersionPreset = IMMERSION_PRESETS, stylePreset = STYLE_PRESETS,
+  fontPreset = FONT_PRESETS, textSizePreset = TEXT_SIZE_PRESETS,
+  tickerAnimation = { fade = true, typewriter = true, slide = true, marquee = true },
+  chatBarAnchor = { LEFT = true, RIGHT = true, TOP = true, BOTTOM = true },
+  editBoxPosition = { TOP = true, BOTTOM = true },
+  styleFontOutline = { [""] = true, OUTLINE = true, THICKOUTLINE = true, MONOCHROME = true,
+    ["OUTLINE,MONOCHROME"] = true, ["THICKOUTLINE,MONOCHROME"] = true },
+}
+local COLOR_KEYS = { styleBackgroundColor = true, styleBorderColor = true, timestampColor = true }
+
+local function NormalizeValue(key, value)
+  local fallback = DEFAULTS.profile[key]
+  if fallback == nil then return nil end
+  if not NS.CanAccessValue(value) or type(value) ~= type(fallback) then return fallback end
+  local limits = NUMBER_LIMITS[key]
+  if limits then
+    value = NS.Clamp(NS.SafeNumber(value, fallback), limits[1], limits[2])
+    return limits[3] and math.floor(value) or value
+  end
+  local choices = ENUM_VALUES[key]
+  if choices then return choices[value] and value or fallback end
+  if COLOR_KEYS[key] then
+    value = value:gsub("^#", ""):upper()
+    return #value == 6 and value:match("^%x+$") and value or fallback
+  end
+  if type(value) == "string" and (#value > 256 or value:find("%z") or value == "") then return fallback end
+  return value
+end
+
 local function InitDB()
-  if not RothChatDB or type(RothChatDB) ~= "table" then
-    RothChatDB = {}
-  end
-  if type(RothChatDB.profile) ~= "table" then
-    RothChatDB.profile = {}
-  end
-
-  local hadStylePreset = RothChatDB.profile.stylePreset ~= nil
-  local hadFontPreset = RothChatDB.profile.fontPreset ~= nil
-  local hadTextSizePreset = RothChatDB.profile.textSizePreset ~= nil
-
-  -- Apply defaults (shallow; profile values are primitives)
-  for k, v in pairs(DEFAULTS.profile) do
-    if RothChatDB.profile[k] == nil then
-      RothChatDB.profile[k] = v
-    end
-  end
-
-  -- Profile versioning / minimal migration. Version bumps must never overwrite
-  -- explicit feature or module choices that already exist in SavedVariables.
-  local prevVersion = RothChatDB.profile.__version
-  if prevVersion ~= RothChat.version then
-    -- New in v0.9.3: separate fade-in/out durations.
-    if RothChatDB.profile.immersionFadeInDuration == nil then RothChatDB.profile.immersionFadeInDuration = 0.12 end
-    if RothChatDB.profile.immersionFadeOutDuration == nil then RothChatDB.profile.immersionFadeOutDuration = 0.65 end
-    if RothChatDB.profile.hoverFadeInDuration == nil then RothChatDB.profile.hoverFadeInDuration = 0.12 end
-    if RothChatDB.profile.hoverFadeOutDuration == nil then RothChatDB.profile.hoverFadeOutDuration = 0.45 end
-    -- Keep legacy single-duration sliders in a sane range.
-    if type(RothChatDB.profile.hoverFadeDuration) == "number" and RothChatDB.profile.hoverFadeDuration > 1.0 then
-      RothChatDB.profile.hoverFadeDuration = RothChatDB.profile.hoverFadeInDuration
-    end
-
-    -- History is legacy (Restore handles persistence); only initialize an
-    -- absent flag. Never flip a value the user explicitly stored.
-    if RothChatDB.profile.module_History_enabled == nil then
-      RothChatDB.profile.module_History_enabled = false
-    end
-
-    if RothChatDB.profile.timestampColor == nil then
-      RothChatDB.profile.timestampColor = DEFAULTS.profile.timestampColor
-    end
-
-    if not hadStylePreset then
-      RothChatDB.profile.stylePreset = InferStylePreset(RothChatDB.profile)
-    end
-    if not hadFontPreset then
-      RothChatDB.profile.fontPreset = InferFontPreset(RothChatDB.profile)
-    end
-    if not hadTextSizePreset then
-      RothChatDB.profile.textSizePreset = InferTextSizePreset(RothChatDB.profile)
-    end
-
-    RothChatDB.profile.__version = RothChat.version
-  end
-
-  if not hadStylePreset and RothChatDB.profile.stylePreset == nil then
-    RothChatDB.profile.stylePreset = InferStylePreset(RothChatDB.profile)
-  end
-
+  if type(RothChatDB) ~= "table" then RothChatDB = {} end
+  if type(RothChatDB.profile) ~= "table" then RothChatDB.profile = {} end
+  local profile = RothChatDB.profile
+  local hadStylePreset, hadFontPreset, hadTextSizePreset = profile.stylePreset ~= nil, profile.fontPreset ~= nil, profile.textSizePreset ~= nil
+  for key in pairs(DEFAULTS.profile) do profile[key] = NormalizeValue(key, profile[key]) end
+  if not hadStylePreset then profile.stylePreset = InferStylePreset(profile) end
+  if not hadFontPreset then profile.fontPreset = InferFontPreset(profile) end
+  if not hadTextSizePreset then profile.textSizePreset = InferTextSizePreset(profile) end
+  profile.__version = RothChat.version
   RothChat.db = RothChatDB
-
-  -- Non-profile data
-  if type(RothChatDB.history) ~= "table" then
-    RothChatDB.history = { version = 1, entries = {} }
-  elseif type(RothChatDB.history.entries) ~= "table" then
-    RothChatDB.history.entries = {}
-  end
-end
-
--- -----------------------------------------------------------------------------
--- Event bus (internal, module-to-module)
--- -----------------------------------------------------------------------------
-
-RothChat._listeners = {} -- [event] = { {fn=..., owner=...}, ... }
-
-function RothChat:On(event, fn, owner)
-  if type(event) ~= "string" or type(fn) ~= "function" then return end
-  local list = self._listeners[event]
-  if not list then
-    list = {}
-    self._listeners[event] = list
-  end
-  list[#list + 1] = { fn = fn, owner = owner }
-end
-
-function RothChat:Off(event, fn)
-  local list = self._listeners[event]
-  if not list or type(fn) ~= "function" then return end
-  for i = #list, 1, -1 do
-    if list[i].fn == fn then
-      table.remove(list, i)
-    end
-  end
-end
-
--- Remove all registered listeners for a given owner (typically a module table).
-function RothChat:OffOwner(owner)
-  if not owner then return end
-  for _, list in pairs(self._listeners) do
-    for i = #list, 1, -1 do
-      if list[i].owner == owner then
-        table.remove(list, i)
-      end
-    end
-  end
-end
-
-function RothChat:Emit(event, ...)
-  local list = self._listeners[event]
-  if not list then return end
-  for i = 1, #list do
-    local it = list[i]
-    if it and it.fn then
-      NS.SafeCall("RothChat:Emit:" .. event, it.fn, it.owner, self, ...)
-    end
-  end
+  -- Existing legacy history remains untouched, but no inactive history store
+  -- or obsolete History module settings are created for new profiles.
 end
 
 function RothChat:Get(k)
   return self.db and self.db.profile and self.db.profile[k]
 end
 
-function RothChat:Set(k, v)
-  if not self.db or not self.db.profile then return end
-  self.db.profile[k] = v
+function RothChat:Set(key, value)
+  if not self.db or not self.db.profile or type(key) ~= "string" then return false end
+  if DEFAULTS.profile[key] ~= nil then
+    value = NormalizeValue(key, value)
+  else
+    local moduleName = key:match("^module_(.+)_enabled$")
+    if not moduleName or not self.modules[moduleName] or type(value) ~= "boolean" then return false end
+  end
+  if self.db.profile[key] == value then return false end
+  self.db.profile[key] = value
+  return true
 end
 
 function RothChat:Debug(...)
@@ -430,204 +386,6 @@ function RothChat:ForEachModule(fn)
   end
 end
 
-local function InsertSortedByPriority(list, entry)
-  local pri = entry[3]
-  for i = 1, #list do
-    if pri < list[i][3] then
-      table.insert(list, i, entry)
-      return
-    end
-  end
-  list[#list + 1] = entry
-end
-
-local function RemoveListEntry(list, target)
-  if not list or not target then return end
-  for i = #list, 1, -1 do
-    if list[i] == target then
-      table.remove(list, i)
-    end
-  end
-end
-
-local function MultiErrorHandler(err)
-  return tostring(err) .. "\n" .. debugstack(2, 25, 25)
-end
-
--- Preserve both arity and nil positions. Chat filters gained a complete
--- 19-field contract in Retail 12.1, and future events may grow again.
-local function PackValues(...)
-  return { n = select("#", ...), ... }
-end
-
-local function UnpackValues(values, first)
-  return unpack(values, first or 1, values.n)
-end
-
-local function SafeCallMulti(label, fn, ...)
-  if type(fn) ~= "function" then
-    return false
-  end
-
-  local results = PackValues(xpcall(fn, MultiErrorHandler, ...))
-  if not results[1] then
-    if DEFAULT_CHAT_FRAME then
-      DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffff4040%s error|r: %s", tostring(label or "RothChat"), tostring(results[2])))
-    end
-    return false
-  end
-
-  return true, UnpackValues(results, 2)
-end
-
-local function GetOrCreateMessageFilterState(self, event)
-  local state = self._messageFilterState[event]
-  if state then
-    return state
-  end
-
-  state = {
-    entries = {},
-  }
-
-  -- Module filters may replace visible arg1 only. The dispatcher itself keeps
-  -- the complete incoming tuple and returns a replacement tuple only when text
-  -- actually changed. A no-op `return false` leaves Blizzard's secure tuple
-  -- untouched, reducing taint on routing, sender, line-ID and access metadata.
-  state.dispatcher = function(chatFrame, evt, ...)
-    local args = PackValues(...)
-    if args.n < 1 or (NS.CanAccessValue and not NS.CanAccessValue(args[1])) then
-      return false
-    end
-
-    local current = self._messageFilterState[evt]
-    local entries = current and current.entries
-    local shouldDiscardMessage = false
-    local transformedMessage = false
-
-    if entries then
-      for i = 1, #entries do
-        local entry = entries[i]
-        if entry and entry[1] then
-          local results = PackValues(
-            SafeCallMulti(
-              "RothChat:MsgFilter:" .. evt,
-              entry[1],
-              chatFrame,
-              evt,
-              UnpackValues(args)
-            )
-          )
-
-          if results[1] then
-            local discard = results[2]
-            local newArg1 = results[3]
-
-            if discard then
-              shouldDiscardMessage = true
-              break
-            elseif newArg1 and (not NS.CanAccessValue or NS.CanAccessValue(newArg1)) then
-              args[1] = newArg1
-              if args.n < 1 then
-                args.n = 1
-              end
-              transformedMessage = true
-            end
-          end
-        end
-      end
-    end
-
-    if shouldDiscardMessage then
-      return true
-    end
-
-    if transformedMessage then
-      return false, UnpackValues(args)
-    end
-
-    return false
-  end
-
-  self._messageFilterState[event] = state
-  return state
-end
-
-function RothChat:RegisterMessageFilter(owner, event, callback, priority)
-  if type(owner) ~= "table" or type(event) ~= "string" or type(callback) ~= "function" then
-    return false
-  end
-  priority = tonumber(priority) or 50
-
-  local byEvent = self._moduleFilters[owner]
-  if not byEvent then
-    byEvent = {}
-    self._moduleFilters[owner] = byEvent
-  end
-
-  local list = byEvent[event]
-  if not list then
-    list = {}
-    byEvent[event] = list
-  end
-
-  for i = 1, #list do
-    if list[i][1] == callback then
-      return true
-    end
-  end
-
-  local state = GetOrCreateMessageFilterState(self, event)
-  if not state.registered then
-    local ok = NS.AddMessageEventFilter(event, state.dispatcher)
-    if not ok then
-      return false
-    end
-    state.registered = true
-  end
-
-  local entry = { callback, owner, priority }
-  InsertSortedByPriority(state.entries, entry)
-  list[#list + 1] = entry
-  return true
-end
-
-function RothChat:RegisterMessageFilters(owner, events, callback, priority)
-  if type(events) ~= "table" then return 0 end
-  local n = 0
-  for i = 1, #events do
-    if self:RegisterMessageFilter(owner, events[i], callback, priority) then
-      n = n + 1
-    end
-  end
-  return n
-end
-
-function RothChat:UnregisterMessageFilters(owner)
-  if type(owner) ~= "table" then return end
-  local byEvent = self._moduleFilters[owner]
-  if not byEvent then return end
-
-  for event, list in pairs(byEvent) do
-    local state = self._messageFilterState[event]
-    if state then
-      for i = #list, 1, -1 do
-        RemoveListEntry(state.entries, list[i])
-        list[i] = nil
-      end
-
-      if state.registered and #state.entries == 0 then
-        NS.RemoveMessageEventFilter(event, state.dispatcher)
-        self._messageFilterState[event] = nil
-      end
-    end
-
-    byEvent[event] = nil
-  end
-
-  self._moduleFilters[owner] = nil
-end
-
 local function SafeModuleCall(self, name, method, ...)
   local m = self.modules[name]
   if not m then return false end
@@ -683,6 +441,8 @@ function RothChat:EnableModule(name)
     st.initOK = ok and true or false
     st.ok = st.initOK
     if not st.initOK then
+      SafeModuleCall(self, name, "OnDisable")
+      CleanupModuleRegistrations(self, module)
       return false
     end
   elseif not st.initOK then
@@ -699,6 +459,7 @@ function RothChat:EnableModule(name)
   if not ok then
     st.ok = false
     st.active = false
+    SafeModuleCall(self, name, "OnDisable")
     CleanupModuleRegistrations(self, module)
     return false
   end
@@ -743,221 +504,58 @@ function RothChat:ApplyModuleEnablement()
 end
 
 -- -----------------------------------------------------------------------------
--- Combat-safe deferred execution
+-- Bounded latest-state work; no message tuples or changing permissions retained.
 -- -----------------------------------------------------------------------------
 
-function RothChat:Defer(fn, ...)
-  if type(fn) ~= "function" then return end
-  self._deferred[#self._deferred + 1] = { fn = fn, args = PackValues(...) }
+function RothChat:DeferKeyed(key, callback, ...)
+  if key == nil or type(callback) ~= "function" or not NS.CanAccessAllValues(...) then return false end
+  local job = self._deferredByKey[key]
+  if job then
+    job.fn, job.args = callback, NS.Pack(...)
+    return true
+  end
+  if self._deferredCount >= 128 then return false end
+  if #self._deferred >= 128 then
+    local retained = {}
+    for _, old in ipairs(self._deferred) do
+      if old.fn then retained[#retained + 1] = old end
+    end
+    self._deferred = retained
+  end
+  job = { key = key, fn = callback, args = NS.Pack(...) }
+  self._deferredByKey[key] = job
+  self._deferred[#self._deferred + 1] = job
+  self._deferredCount = self._deferredCount + 1
+  return true
+end
+
+function RothChat:Defer(callback, ...)
+  return self:DeferKeyed(callback, callback, ...)
+end
+
+function RothChat:CancelDeferred(key)
+  local job = self._deferredByKey[key]
+  if not job then return end
+  job.fn = nil
+  self._deferredByKey[key] = nil
+  self._deferredCount = self._deferredCount - 1
+  if self._deferredCount == 0 then self._deferred = {} end
 end
 
 function RothChat:RunDeferred()
-  if InCombatLockdown() then return end
-  if #self._deferred == 0 then return end
-
-  local q = self._deferred
+  if InCombatLockdown() or self._deferredCount == 0 then return end
+  local jobs = self._deferred
   self._deferred = {}
-  for _, job in ipairs(q) do
-    NS.SafeCall("RothChat:Deferred", job.fn, UnpackValues(job.args))
-  end
-end
-
--- -----------------------------------------------------------------------------
--- Unified AddMessage dispatcher
--- One hooksecurefunc per chatFrame instead of N separate hooks per module.
--- Modules register via core:RegisterAddMessageHook(callback, owner, priority).
--- Lower priority = called first.
--- -----------------------------------------------------------------------------
-
-RothChat._addMsgCallbacks = {} -- sorted list: { {fn, owner, priority}, ... }
-RothChat._addMsgHooked = {}   -- [chatFrame] = true
-
-local function DispatchAddMessage(chatFrame, text, r, g, b, ...)
-  if NS.CanAccessValue then
-    if not NS.CanAccessValue(text) then return end
-  elseif NS.IsSecretValue(text) then
-    return
-  end
-
-  local cbs = RothChat._addMsgCallbacks
-  for i = 1, #cbs do
-    local entry = cbs[i]
-    if entry and entry[1] then
-      NS.SafeCall("AddMsgHook", entry[1], chatFrame, text, r, g, b, ...)
-    end
-  end
-end
-
-local function EnsureAddMsgHook(chatFrame)
-  if not chatFrame or RothChat._addMsgHooked[chatFrame] then return end
-  if type(chatFrame.AddMessage) ~= "function" then return end
-  RothChat._addMsgHooked[chatFrame] = true
-  hooksecurefunc(chatFrame, "AddMessage", DispatchAddMessage)
-end
-
-function RothChat:RegisterAddMessageHook(callback, owner, priority)
-  if type(callback) ~= "function" then return end
-  priority = tonumber(priority) or 50
-
-  -- Deduplicate: same callback + owner = skip
-  for i = 1, #self._addMsgCallbacks do
-    local e = self._addMsgCallbacks[i]
-    if e[1] == callback and e[2] == owner then return end
-  end
-
-  InsertSortedByPriority(self._addMsgCallbacks, { callback, owner, priority })
-
-  -- Ensure all known chat frames are hooked
-  for _, cf in ipairs(NS.GetChatFrames()) do
-    EnsureAddMsgHook(cf)
-  end
-end
-
-function RothChat:UnregisterAddMessageHooks(owner)
-  if not owner then return end
-  local cbs = self._addMsgCallbacks
-  for i = #cbs, 1, -1 do
-    if cbs[i][2] == owner then
-      table.remove(cbs, i)
-    end
-  end
-end
-
--- Hook new chat frames created after initial registration.
-function RothChat:EnsureAddMsgHookForFrame(chatFrame)
-  EnsureAddMsgHook(chatFrame)
-end
-
--- -----------------------------------------------------------------------------
--- Shared chat lifecycle router
--- Consolidates overlapping FCF_* hooks and re-emits them through the core bus.
--- -----------------------------------------------------------------------------
-
-local function ResetChatLifecycleQueue(queue)
-  queue.queued = false
-  queue.refreshAll = false
-  queue.layoutReason = nil
-  queue.frameReasons = {}
-  queue.closedFrames = {}
-end
-
-function RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
-  local queue = self._chatLifecycleQueue
-  reason = reason or "layout"
-
-  if chatFrame then
-    queue.frameReasons[chatFrame] = reason
-  else
-    queue.refreshAll = true
-  end
-
-  queue.layoutReason = queue.layoutReason or reason
-  if queue.queued then
-    return
-  end
-
-  queue.queued = true
-  NS.RunNextFrame(self._chatLifecycleScheduleKey, function()
-    local current = self._chatLifecycleQueue
-    if not current.queued then
-      return
-    end
-
-    local refreshAll = current.refreshAll
-    local layoutReason = current.layoutReason or "layout"
-    local frameReasons = current.frameReasons
-    local closedFrames = current.closedFrames
-
-    ResetChatLifecycleQueue(current)
-
-    for closedFrame, closedReason in pairs(closedFrames) do
-      self:Emit("CHAT_FRAME_CLOSED", closedFrame, closedReason)
-    end
-
-    self:Emit("CHAT_LAYOUT_CHANGED", layoutReason)
-
-    if refreshAll then
-      for _, cf in ipairs(NS.GetChatFrames()) do
-        EnsureAddMsgHook(cf)
-        self:Emit("CHAT_FRAME_READY", cf, frameReasons[cf] or layoutReason)
-      end
-    else
-      for cf, frameReason in pairs(frameReasons) do
-        EnsureAddMsgHook(cf)
-        self:Emit("CHAT_FRAME_READY", cf, frameReason)
+  for _, job in ipairs(jobs) do
+    if self._deferredByKey[job.key] == job and job.fn then
+      if InCombatLockdown() then
+        self._deferred[#self._deferred + 1] = job
+      else
+        self._deferredByKey[job.key] = nil
+        self._deferredCount = self._deferredCount - 1
+        NS.SafeCall("RothChat:Deferred", job.fn, NS.Unpack(job.args))
       end
     end
-  end, "RothChat:ChatLifecycleRefresh")
-end
-
-function RothChat:QueueChatLifecycleClose(chatFrame, reason)
-  if chatFrame then
-    self._chatLifecycleQueue.closedFrames[chatFrame] = reason or "close"
-  end
-  self:QueueChatLifecycleRefresh(nil, reason or "close")
-end
-
-function RothChat:EnsureChatLifecycleHooks()
-  if self._chatLifecycleHooked then
-    return
-  end
-  self._chatLifecycleHooked = true
-
-  local function QueueAll(reason)
-    RothChat:QueueChatLifecycleRefresh(nil, reason)
-  end
-
-  local function QueueFrame(chatFrame, reason)
-    if chatFrame then
-      RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
-    else
-      RothChat:QueueChatLifecycleRefresh(nil, reason)
-    end
-  end
-
-  if type(_G.FCFDock_SelectWindow) == "function" then
-    hooksecurefunc("FCFDock_SelectWindow", function(_, chatFrame)
-      QueueFrame(chatFrame, "dock_select_window")
-      QueueAll("dock_select_window")
-    end)
-  end
-
-  if type(_G.FCF_SelectDockFrame) == "function" then
-    hooksecurefunc("FCF_SelectDockFrame", function(chatFrame)
-      QueueFrame(chatFrame, "select_dock_frame")
-      QueueAll("select_dock_frame")
-    end)
-  end
-
-  if type(_G.FCF_DockUpdate) == "function" then
-    hooksecurefunc("FCF_DockUpdate", function()
-      QueueAll("dock_update")
-    end)
-  end
-
-  if type(_G.FCF_OpenTemporaryWindow) == "function" then
-    hooksecurefunc("FCF_OpenTemporaryWindow", function()
-      QueueAll("open_temporary_window")
-    end)
-  end
-
-  if type(_G.FCF_OpenNewWindow) == "function" then
-    hooksecurefunc("FCF_OpenNewWindow", function()
-      QueueAll("open_new_window")
-    end)
-  end
-
-  if type(_G.FCF_SetTemporaryWindowType) == "function" then
-    hooksecurefunc("FCF_SetTemporaryWindowType", function(chatFrame)
-      QueueFrame(chatFrame, "set_temporary_window_type")
-      QueueAll("set_temporary_window_type")
-    end)
-  end
-
-  if type(_G.FCF_Close) == "function" then
-    hooksecurefunc("FCF_Close", function(chatFrame)
-      RothChat:QueueChatLifecycleClose(chatFrame, "close_window")
-    end)
   end
 end
 
@@ -969,7 +567,7 @@ local function EnsureModuleFlagsInDB()
   -- Persist default module enabled flags into SavedVariables (only if absent).
   RothChat:ForEachModule(function(name, mod)
     local key = "module_" .. name .. "_enabled"
-    if RothChat:Get(key) == nil then
+    if type(RothChat:Get(key)) ~= "boolean" then
       RothChat:Set(key, mod.defaultEnabled ~= false)
     end
   end)
@@ -980,12 +578,9 @@ function RothChat:OnAddonLoaded()
   self._addonLoaded = true
   self._addonEnabled = self:Get("enabled") ~= false
 
-  if not self._addonEnabled then
-    self:Print("disabled in settings")
-    return
-  end
-
   EnsureModuleFlagsInDB()
+  if not self._addonEnabled then return end
+  self:EnsureChatLifecycleHooks()
   self:ApplyModuleEnablement()
 end
 
@@ -1015,17 +610,27 @@ RothChat:SetScript("OnEvent", function(self, event, ...)
     local name = ...
     if name == ADDON_NAME then
       self:OnAddonLoaded()
+      self:UnregisterEvent("ADDON_LOADED")
     end
   elseif event == "PLAYER_LOGIN" then
     self:OnPlayerLogin()
   elseif event == "PLAYER_REGEN_ENABLED" then
     self:RunDeferred()
+  elseif event == "UPDATE_CHAT_WINDOWS" or event == "UPDATE_FLOATING_CHAT_WINDOWS" then
+    if self._addonEnabled then self:QueueChatLifecycleRefresh(nil, event) end
+  elseif event == "ADDON_RESTRICTION_STATE_CHANGED" then
+    local restricted = NS.IsChatMessagingRestricted()
+    self:Emit("CHAT_RESTRICTION_CHANGED", restricted)
+    if not restricted and self._addonEnabled then self:QueueChatLifecycleRefresh(nil, "restriction_changed") end
   end
 end)
 
 RothChat:RegisterEvent("ADDON_LOADED")
 RothChat:RegisterEvent("PLAYER_LOGIN")
 RothChat:RegisterEvent("PLAYER_REGEN_ENABLED")
+RothChat:RegisterEvent("UPDATE_CHAT_WINDOWS")
+RothChat:RegisterEvent("UPDATE_FLOATING_CHAT_WINDOWS")
+RothChat:RegisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
 
 -- Slash command
 SLASH_ROTHCHAT1 = "/rothchat"
@@ -1044,12 +649,9 @@ SlashCmdList["ROTHCHAT"] = function(msg)
     if RothChat.optionsCategoryID then
       Settings.OpenToCategory(RothChat.optionsCategoryID)
     else
-      RothChat:Print("Open Interface Options -> AddOns -> Roth Chat")
+      RothChat:Print("Open Settings -> AddOns -> Roth Chat")
     end
-  elseif InterfaceOptionsFrame_OpenToCategory then
-    InterfaceOptionsFrame_OpenToCategory("Roth Chat")
-    InterfaceOptionsFrame_OpenToCategory("Roth Chat")
   else
-    RothChat:Print("Open Interface Options -> AddOns -> Roth Chat")
+    RothChat:Print("Open Settings -> AddOns -> Roth Chat")
   end
 end
