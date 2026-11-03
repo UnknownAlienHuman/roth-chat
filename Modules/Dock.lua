@@ -2,7 +2,7 @@
 -- Normalizes GeneralDockManager sizing while preserving the exact pre-module
 -- dock geometry for runtime disable/re-enable.
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 if not RothChat then return end
 
@@ -13,32 +13,15 @@ local M = {
 }
 
 RothChat:RegisterModule(M)
-M.__dockApplyKey = M.__dockApplyKey or {}
-M.__dockDeferredApplyKey = M.__dockDeferredApplyKey or {}
-M.__dockDeferredRestoreKey = M.__dockDeferredRestoreKey or {}
+M.__dockApplyKey = {}
+M.__dockDeferredApplyKey = {}
+M.__dockDeferredRestoreKey = {}
 
 local dockActive = false
 local snapshots = setmetatable({}, { __mode = "k" })
 
 local function CanAccessFrame(frame)
-  return frame ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(frame))
-end
-
-local function SafeNumber(value)
-  if NS.SafeNumber then return NS.SafeNumber(value) end
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value or nil
-end
-
-local function DeferKeyed(core, key, callback, ...)
-  if type(core.DeferKeyed) == "function" then
-    core:DeferKeyed(key, callback, ...)
-  elseif type(core.Defer) == "function" then
-    core:Defer(callback, ...)
-  end
-end
-
-local function CancelDeferred(core, key)
-  if type(core.CancelDeferred) == "function" then core:CancelDeferred(key) end
+  return frame ~= nil and NS.CanAccessObject(frame)
 end
 
 local function CapturePoints(frame)
@@ -47,13 +30,13 @@ local function CapturePoints(frame)
     return points
   end
 
-  local count = math.max(0, math.floor(SafeNumber(frame:GetNumPoints(), 0)))
+  local count = math.max(0, math.floor(NS.SafeNumber(frame:GetNumPoints(), 0)))
   for index = 1, count do
     local point, relativeTo, relativePoint, x, y = frame:GetPoint(index)
-    if (not NS.CanAccessAllValues or NS.CanAccessAllValues(point, relativeTo, relativePoint, x, y))
+    if NS.CanAccessAllValues(point, relativeTo, relativePoint, x, y)
       and (relativeTo == nil or CanAccessFrame(relativeTo))
     then
-      points[#points + 1] = { point, relativeTo, relativePoint, SafeNumber(x), SafeNumber(y) }
+      points[#points + 1] = { point, relativeTo, relativePoint, NS.SafeNumber(x), NS.SafeNumber(y) }
     end
   end
   return points
@@ -70,7 +53,7 @@ end
 
 local function IsOwnedHeight(frame)
   if not CanAccessFrame(frame) or type(frame.GetHeight) ~= "function" then return false end
-  local height = SafeNumber(frame:GetHeight())
+  local height = NS.SafeNumber(frame:GetHeight())
   return height ~= nil and math.abs(height - 20) < 0.01
 end
 
@@ -78,14 +61,14 @@ local function HasOwnedScrollPoint(frame, dock)
   if not CanAccessFrame(frame) or type(frame.GetNumPoints) ~= "function" or type(frame.GetPoint) ~= "function" then
     return false
   end
-  if SafeNumber(frame:GetNumPoints()) ~= 1 then return false end
+  if NS.SafeNumber(frame:GetNumPoints()) ~= 1 then return false end
   local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
-  return (not NS.CanAccessAllValues or NS.CanAccessAllValues(point, relativeTo, relativePoint, x, y))
+  return NS.CanAccessAllValues(point, relativeTo, relativePoint, x, y)
     and point == "BOTTOMRIGHT"
     and relativeTo == dock
     and relativePoint == "BOTTOMRIGHT"
-    and SafeNumber(x) == 0
-    and SafeNumber(y) == -1
+    and NS.SafeNumber(x) == 0
+    and NS.SafeNumber(y) == -1
 end
 
 local function CaptureDock(dock)
@@ -98,10 +81,10 @@ local function CaptureDock(dock)
   local scrollHeight = scrollFrame and type(scrollFrame.GetHeight) == "function" and scrollFrame:GetHeight() or nil
   local childHeight = child and type(child.GetHeight) == "function" and child:GetHeight() or nil
   snapshots[dock] = {
-    dockHeight = SafeNumber(dockHeight),
-    scrollHeight = SafeNumber(scrollHeight),
+    dockHeight = NS.SafeNumber(dockHeight),
+    scrollHeight = NS.SafeNumber(scrollHeight),
     scrollPoints = CapturePoints(scrollFrame),
-    childHeight = SafeNumber(childHeight),
+    childHeight = NS.SafeNumber(childHeight),
   }
 end
 
@@ -150,7 +133,7 @@ local function IsEnabled(core)
 end
 
 local function DeferDockApply(core, dock)
-  DeferKeyed(core, M.__dockDeferredApplyKey, function(target)
+  core:DeferKeyed(M.__dockDeferredApplyKey, function(target)
     if IsEnabled(core) and CanAccessFrame(target) then ApplyDockSizing(target) end
   end, dock)
 end
@@ -169,7 +152,7 @@ end
 local function RestoreOutsideCombat(core, dock)
   if not CanAccessFrame(dock) then return end
   if InCombatLockdown() then
-    DeferKeyed(core, M.__dockDeferredRestoreKey, function(target)
+    core:DeferKeyed(M.__dockDeferredRestoreKey, function(target)
       if not dockActive then RestoreDockSizing(target) end
     end, dock)
   else
@@ -183,7 +166,7 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
-  CancelDeferred(core, M.__dockDeferredRestoreKey)
+  core:CancelDeferred(M.__dockDeferredRestoreKey)
   dockActive = true
   core:EnsureChatLifecycleHooks()
 
@@ -205,7 +188,7 @@ end
 
 function M:OnDisable(core)
   dockActive = false
-  CancelDeferred(core, M.__dockDeferredApplyKey)
+  core:CancelDeferred(M.__dockDeferredApplyKey)
   NS.CancelScheduled(M.__dockApplyKey)
 
   local dock = _G.GENERAL_CHAT_DOCK or _G.GeneralDockManager

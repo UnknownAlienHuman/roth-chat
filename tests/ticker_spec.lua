@@ -7,6 +7,7 @@ local createdFrames = {}
 local scheduled = {}
 local deferred = {}
 local inCombat = false
+local unpackValues = unpack or table.unpack
 
 local function NewRegion()
   local region = { text = "", alpha = 1 }
@@ -87,13 +88,22 @@ _G.RothChat = {
 }
 
 local NS = {
+  CanAccessObject = function(frame) return frame ~= nil end,
+  CanAccessValue = function() return true end,
+  SafeNumber = function(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value or nil
+  end,
+  IsChatMessagingRestricted = function() return false end,
   GetChatFrameIndex = function(frame) return frame and frame.index end,
   IsActiveChatFrame = function(frame) return frame and frame.active end,
-  GetActiveChatFrames = function() return { primary, secondary } end,
-  GetSelectedDockChatFrame = function() return primary end,
   IsDockedChatFrame = function() return false end,
-  CanAccessValue = function() return true end,
+  GetSelectedDockChatFrame = function() return primary end,
+  GetActiveChatFrames = function() return { primary, secondary } end,
   SafeToString = tostring,
+  SafeTrunc = function(text, count)
+    if #text > count then return text:sub(1, count) .. "..." end
+    return text
+  end,
   Utf8Len = function(text) return #text end,
   Utf8Sub = function(text, count) return text:sub(1, count) end,
   Clamp = function(value, minimum, maximum)
@@ -200,6 +210,25 @@ values.tickerAnimation = "none"
 addMessageHook(primary, "post-lockdown text", 0.2, 0.4, 0.6)
 assert(createdFrames[1].text:GetText() == "post-lockdown text")
 
+-- Sustained bursts remain bounded and discard the oldest queued lines.
+local tickerFrame = createdFrames[1]
+if scheduled[holdKey] then scheduled[holdKey]() end
+values.tickerAnimation = "typewriter"
+addMessageHook(primary, "burst blocker", 1, 1, 1)
+for index = 1, 250 do
+  addMessageHook(primary, "bounded message " .. index, 1, 1, 1)
+end
+tickerFrame.isAnimating = false
+tickerFrame.holding = false
+module:ProcessQueue(core, primary)
+assert(tickerFrame.fullText == "bounded message 151", "a full queue should retain only the latest 100 lines")
+
+-- A line size cap bounds retained strings and work sent to FontStrings.
+restriction(nil, core, true)
+restriction(nil, core, false)
+addMessageHook(primary, string.rep("x", 5000), 1, 1, 1)
+assert(#tickerFrame.fullText <= 1027, "ticker text must be truncated before display")
+
 -- A non-primary visibility event cannot overwrite the secondary frame.
 visibility(nil, core, secondary, true, false, false)
 assert(secondary.alpha == 0.35 and secondary.mouseEnabled == false)
@@ -219,7 +248,7 @@ assert(deferred[module.__applyDeferredKey])
 inCombat = false
 local pendingApply = deferred[module.__applyDeferredKey]
 deferred[module.__applyDeferredKey] = nil
-pendingApply.callback(table.unpack(pendingApply.args))
+pendingApply.callback(unpackValues(pendingApply.args))
 assert(type(addMessageHook) == "function", "latest re-enable should own the AddMessage hook")
 
 activeModules.Ticker = false

@@ -69,20 +69,19 @@ local function GetTimestampPrefix()
 end
 
 local function AddTimestamp(self, event, msg, ...)
-  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then return false end
-  if NS.CanAccessValue and not NS.CanAccessValue(msg) then return false end
+  if NS.IsChatMessagingRestricted() then return false end
+  if not NS.CanAccessValue(msg) then return false end
   if type(msg) ~= "string" then return false end
 
   -- Native timestamps are appended by Blizzard after this filter. Returning a
   -- replacement here would produce two prefixes in the final displayed line.
   if BLIZZARD_NATIVE_TIMESTAMP_EVENTS[event]
-    and NS.HasNativeChatTimestamps
     and NS.HasNativeChatTimestamps()
   then
     return false
   end
 
-  if NS.HasRothTimestampPrefix and NS.HasRothTimestampPrefix(msg) then
+  if NS.HasRothTimestampPrefix(msg) then
     return false
   end
 

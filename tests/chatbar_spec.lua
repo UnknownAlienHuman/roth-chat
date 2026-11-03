@@ -1,4 +1,5 @@
 -- ChatBar combat deferral and safe target selection contract.
+local unpackValues = unpack or table.unpack
 
 local registeredModule
 local deferred = {}
@@ -64,6 +65,7 @@ local NS = {
   SafeNumber = function(value, fallback) return type(value) == "number" and value or fallback end,
   IsActiveChatFrame = function(frame) return frame == chatFrame end,
   GetActiveChatFrames = function() return { chatFrame } end,
+  ResolveActiveDockChatFrame = function(frame) return frame end,
   GetSelectedDockChatFrame = function() return nil end,
   GetChatFrameIndex = function(frame) return frame.index end,
   ApplyGlassBackdrop = function() end,
@@ -83,6 +85,7 @@ local values = {
 }
 local core = {
   Get = function(_, key) return values[key] end,
+  Set = function(_, key, value) values[key] = value end,
   IsModuleActive = function() return active end,
   EnsureChatLifecycleHooks = function() end,
   RegisterHoverFrame = function(_, owner, accessory) hoverOwners[owner] = accessory end,
@@ -114,7 +117,7 @@ assert(deferred[applyKey])
 inCombat = false
 local pending = deferred[applyKey]
 deferred[applyKey] = nil
-pending.callback(table.unpack(pending.args))
+pending.callback(unpackValues(pending.args))
 
 assert(#framesCreated == 11, "one bar and ten channel buttons should be created")
 assert(framesCreated[1].shown)

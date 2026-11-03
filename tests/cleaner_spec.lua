@@ -67,9 +67,16 @@ module:Refresh(core)
 assert(CHAT_GUILD_GET:find("[G]", 1, true), "compact mode must use the explicit compact tag")
 assert(CHAT_WHISPER_INFORM_GET:find("Кому", 1, true), "compact mode must not replace localized whisper text")
 
+-- Refresh must give up ownership of formats changed by another addon instead
+-- of overwriting them and later restoring the stale enable-time snapshot.
+CHAT_YELL_GET = "External: %s"
+module:Refresh(core)
+assert(CHAT_YELL_GET == "External: %s", "refresh must preserve a foreign format change")
+
 module:OnDisable(core)
 for _, key in ipairs(keys) do
-  assert(_G[key] == originals[key], "disable must restore the original format for " .. key)
+  local expected = key == "CHAT_YELL_GET" and "External: %s" or originals[key]
+  assert(_G[key] == expected, "disable must restore owned formats only: " .. key)
 end
 
 print("cleaner_spec: ok")

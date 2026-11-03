@@ -1,7 +1,7 @@
 -- RothChat - ChatBar module
 -- Diablo-ish minimal channel bar that appears on hover through Controls.
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 
 local M = {
@@ -14,35 +14,22 @@ local bar
 local lastRestrictedNotice = 0
 local listenersRegistered = false
 local ApplyBar
-M.__chatBarApplyKey = M.__chatBarApplyKey or {}
+M.__chatBarApplyKey = {}
 local applyDeferredKey = M.__chatBarApplyKey
 
 local function CanAccessFrame(frame)
-  return frame ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(frame))
-end
-
-local function SafeNumber(value, fallback)
-  if NS.SafeNumber then return NS.SafeNumber(value, fallback) end
-  local number = tonumber(value)
-  if not number or number ~= number or number == math.huge or number == -math.huge then return fallback end
-  return number
+  return frame ~= nil and NS.CanAccessObject(frame)
 end
 
 local function DeferApply(core)
   local function Apply()
     if core:IsModuleActive("ChatBar") then ApplyBar(core) end
   end
-  if type(core.DeferKeyed) == "function" then
-    core:DeferKeyed(applyDeferredKey, Apply)
-  elseif type(core.Defer) == "function" then
-    core:Defer(Apply)
-  end
+  core:DeferKeyed(applyDeferredKey, Apply)
 end
 
 local function CancelDeferredApply(core)
-  if type(core.CancelDeferred) == "function" then
-    core:CancelDeferred(applyDeferredKey)
-  end
+  core:CancelDeferred(applyDeferredKey)
 end
 
 local BUTTONS = {
@@ -61,14 +48,14 @@ local BUTTONS = {
 local function IsPermanentActive(frame)
   return CanAccessFrame(frame)
     and not frame.isTemporary
-    and (not NS.IsActiveChatFrame or NS.IsActiveChatFrame(frame))
+    and NS.IsActiveChatFrame(frame)
 end
 
 local function GetTargetChatFrame(core)
-  local configuredIndex = math.floor(SafeNumber(core:Get("chatBarAttachTo"), 1))
+  local configuredIndex = math.floor(NS.SafeNumber(core:Get("chatBarAttachTo"), 1))
   configuredIndex = math.max(1, math.min(10, configuredIndex))
   local configured = _G["ChatFrame" .. configuredIndex]
-  if CanAccessFrame(configured) and NS.ResolveActiveDockChatFrame then
+  if CanAccessFrame(configured) then
     configured = NS.ResolveActiveDockChatFrame(configured)
   end
   if IsPermanentActive(configured) then return configured end
@@ -77,16 +64,16 @@ local function GetTargetChatFrame(core)
   local function AddCandidate(frame)
     if CanAccessFrame(frame) then candidates[#candidates + 1] = frame end
   end
-  AddCandidate(NS.GetSelectedDockChatFrame and NS.GetSelectedDockChatFrame() or nil)
+  AddCandidate(NS.GetSelectedDockChatFrame())
   AddCandidate(_G.ChatFrame1)
-  for _, frame in ipairs(NS.GetActiveChatFrames and NS.GetActiveChatFrames() or {}) do
+  for _, frame in ipairs(NS.GetActiveChatFrames()) do
     AddCandidate(frame)
   end
 
   for _, frame in ipairs(candidates) do
     if IsPermanentActive(frame) then
-      local index = NS.GetChatFrameIndex and NS.GetChatFrameIndex(frame)
-      if index and index ~= configuredIndex and type(core.Set) == "function" then
+      local index = NS.GetChatFrameIndex(frame)
+      if index and index ~= configuredIndex then
         core:Set("chatBarAttachTo", index)
       end
       return frame
@@ -100,14 +87,12 @@ local function NotifyChatRestriction(core)
   if (now - lastRestrictedNotice) < 2 then return end
 
   lastRestrictedNotice = now
-  if core and type(core.Print) == "function" then
-    core:Print("Chat input is unavailable while chat restrictions are active.")
-  end
+  core:Print("Chat input is unavailable while chat restrictions are active.")
 end
 
 local function OpenChat(text, chatFrame)
   if not CanAccessFrame(chatFrame) then return false end
-  if NS.CanAccessAllValues and not NS.CanAccessAllValues(text, chatFrame) then return false end
+  if not NS.CanAccessAllValues(text, chatFrame) then return false end
   local util = _G.ChatFrameUtil
   local open = util and util.OpenChat or _G.ChatFrame_OpenChat
   if type(open) ~= "function" then return false end
@@ -160,7 +145,7 @@ local function CreateBar(core, chatFrame)
     button.__fs:SetText(info.label)
 
     button:SetScript("OnClick", function()
-      if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then
+      if NS.IsChatMessagingRestricted() then
         NotifyChatRestriction(core)
         return
       end
@@ -197,8 +182,8 @@ end
 
 local function LayoutBar(core)
   if not bar then return end
-  local size = SafeNumber(core:Get("chatBarButtonSize"), 18)
-  local spacing = SafeNumber(core:Get("chatBarSpacing"), 4)
+  local size = NS.SafeNumber(core:Get("chatBarButtonSize"), 18)
+  local spacing = NS.SafeNumber(core:Get("chatBarSpacing"), 4)
   local anchor = core:Get("chatBarAnchor") or "LEFT"
   local chatFrame = GetTargetChatFrame(core)
   if not CanAccessFrame(chatFrame) then

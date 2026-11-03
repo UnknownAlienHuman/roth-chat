@@ -61,7 +61,8 @@ end
 _G.UIParent = newWidget("Frame", "UIParent")
 _G.UISpecialFrames = {}
 _G.GetTime = function() return 1 end
-_G.InCombatLockdown = function() return false end
+local combatLocked = false
+_G.InCombatLockdown = function() return combatLocked end
 _G.IsControlKeyDown = function() return false end
 _G.IsAltKeyDown = function() return false end
 _G.IsShiftKeyDown = function() return false end
@@ -70,7 +71,10 @@ local restricted = false
 local registeredModule
 local restrictionListener
 local historyReads = 0
+local deferredJobs = {}
+local activeFrameScans = 0
 local chatFrame = newWidget("ScrollingMessageFrame", "ChatFrame1")
+local activeFrameList = { chatFrame }
 chatFrame.GetName = function() return "ChatFrame1" end
 chatFrame.GetID = function() return 1 end
 chatFrame.GetAlpha = function() return 1 end
@@ -81,9 +85,15 @@ _G.RothChat = {
 
 local NS = {
   IsChatMessagingRestricted = function() return restricted end,
+  CanAccessValue = function() return true end,
+  CanAccessObject = function(value) return type(value) == "table" end,
   IsActiveChatFrame = function(candidate) return candidate == chatFrame end,
+  ResolveActiveDockChatFrame = function(candidate) return candidate end,
   SafeToString = tostring,
-  GetActiveChatFrames = function() return { chatFrame } end,
+  GetActiveChatFrames = function()
+    activeFrameScans = activeFrameScans + 1
+    return activeFrameList
+  end,
   ApplyGlassBackdrop = function() end,
   RunNextFrame = function(_, callback) callback() end,
   CancelScheduled = function() end,
@@ -115,6 +125,8 @@ local core = {
   On = function(_, event, callback)
     if event == "CHAT_RESTRICTION_CHANGED" then restrictionListener = callback end
   end,
+  DeferKeyed = function(_, key, callback) deferredJobs[key] = callback end,
+  CancelDeferred = function(_, key) deferredJobs[key] = nil end,
 }
 
 module:Init(core)
@@ -142,5 +154,26 @@ restrictionListener(nil, core, false)
 assert(not overlay:IsShown(), "cleared restrictions must not replay or reopen old copy content")
 assert(overlay.editBox:GetText() == "")
 
+module:OnDisable(core)
+
+-- A combat-delayed frame scan is keyed and canceled on disable. Re-enabling
+-- during combat replaces the same logical job instead of retaining stale work.
+combatLocked = true
+module:OnEnable(core)
+local deferredKey, deferredApply = next(deferredJobs)
+assert(deferredKey and type(deferredApply) == "function")
+local scansBeforeCancel = activeFrameScans
+module:OnDisable(core)
+assert(next(deferredJobs) == nil, "disable must cancel pending combat work")
+assert(activeFrameScans == scansBeforeCancel, "a canceled job must not scan frames")
+
+module:OnEnable(core)
+local reenabledKey, latestApply = next(deferredJobs)
+assert(reenabledKey == deferredKey and type(latestApply) == "function",
+  "re-enable must use the stable logical job key")
+combatLocked = false
+latestApply()
+deferredJobs[reenabledKey] = nil
+assert(activeFrameScans == scansBeforeCancel + 1, "only one current job should apply")
 module:OnDisable(core)
 print("copy_overlay_lockdown_spec: ok")

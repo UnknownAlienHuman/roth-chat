@@ -14,6 +14,7 @@ local M = {
 }
 
 local QUEUE_MAX = 100
+local MAX_MESSAGE_CHARS = 1024
 local tickers = setmetatable({}, { __mode = "k" })
 local messageQueue = setmetatable({}, { __mode = "k" })
 local frameSnapshots = setmetatable({}, { __mode = "k" })
@@ -24,37 +25,22 @@ M.__cleanupDeferredKey = M.__cleanupDeferredKey or {}
 local chatRestricted = false
 
 local function CanAccessFrame(frame)
-  return frame ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(frame))
+  return NS.CanAccessObject(frame)
 end
 
-local function SafeNumber(value)
-  if NS.SafeNumber then return NS.SafeNumber(value) end
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value or nil
-end
+local SafeNumber = NS.SafeNumber
 
 local function IsChatRestricted()
-  return chatRestricted or (NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted()) or false
-end
-
-local function DeferKeyed(core, key, callback, ...)
-  if type(core.DeferKeyed) == "function" then
-    core:DeferKeyed(key, callback, ...)
-  elseif type(core.Defer) == "function" then
-    core:Defer(callback, ...)
-  end
-end
-
-local function CancelDeferred(core, key)
-  if type(core.CancelDeferred) == "function" then core:CancelDeferred(key) end
+  return chatRestricted or NS.IsChatMessagingRestricted()
 end
 
 local function GetFrameIndex(frame)
-  return NS.GetChatFrameIndex and NS.GetChatFrameIndex(frame) or nil
+  return NS.GetChatFrameIndex(frame)
 end
 
 local function IsPermanentActiveFrame(frame)
   if not CanAccessFrame(frame) or frame.isTemporary then return false end
-  return not NS.IsActiveChatFrame or NS.IsActiveChatFrame(frame)
+  return NS.IsActiveChatFrame(frame)
 end
 
 local function ResolvePrimaryChatFrame(core)
@@ -67,7 +53,7 @@ local function ResolvePrimaryChatFrame(core)
   local function AddCandidate(frame)
     if CanAccessFrame(frame) then candidates[#candidates + 1] = frame end
   end
-  AddCandidate(NS.GetSelectedDockChatFrame and NS.GetSelectedDockChatFrame() or nil)
+  AddCandidate(NS.GetSelectedDockChatFrame())
   AddCandidate(_G.ChatFrame1)
   for _, frame in ipairs(NS.GetActiveChatFrames and NS.GetActiveChatFrames() or {}) do
     AddCandidate(frame)
@@ -87,8 +73,8 @@ end
 
 local function IsChatFrameActiveTab(frame)
   if not IsPermanentActiveFrame(frame) then return false end
-  if NS.IsDockedChatFrame and NS.IsDockedChatFrame(frame) then
-    local selected = NS.GetSelectedDockChatFrame and NS.GetSelectedDockChatFrame()
+  if NS.IsDockedChatFrame(frame) then
+    local selected = NS.GetSelectedDockChatFrame()
     if selected and selected ~= frame then return false end
   end
   return type(frame.IsShown) ~= "function" or frame:IsShown() == true
@@ -97,47 +83,42 @@ end
 local function EnsureQueue(frame)
   local queue = messageQueue[frame]
   if not queue then
-    queue = { first = 1, last = 0 }
+    queue = { head = 1, count = 0 }
     messageQueue[frame] = queue
   end
   return queue
 end
 
-local function QueueSize(queue)
-  if not queue or queue.first > queue.last then return 0 end
-  return queue.last - queue.first + 1
-end
-
 local function QueuePush(frame, line, r, g, b)
   local queue = EnsureQueue(frame)
-  while QueueSize(queue) >= QUEUE_MAX do
-    queue[queue.first] = nil
-    queue.first = queue.first + 1
+  if queue.count >= QUEUE_MAX then
+    queue[queue.head] = nil
+    queue.head = queue.head % QUEUE_MAX + 1
+    queue.count = queue.count - 1
   end
-  queue.last = queue.last + 1
-  queue[queue.last] = { line, r, g, b }
+  local tail = (queue.head + queue.count - 1) % QUEUE_MAX + 1
+  queue[tail] = { line, r, g, b }
+  queue.count = queue.count + 1
 end
 
 local function QueuePop(frame)
   local queue = messageQueue[frame]
-  if not queue or queue.first > queue.last then return nil end
+  if not queue or queue.count == 0 then return nil end
 
-  local item = queue[queue.first]
-  queue[queue.first] = nil
-  queue.first = queue.first + 1
-  if queue.first > queue.last then
-    queue.first = 1
-    queue.last = 0
-  end
+  local item = queue[queue.head]
+  queue[queue.head] = nil
+  queue.head = queue.head % QUEUE_MAX + 1
+  queue.count = queue.count - 1
+  if queue.count == 0 then queue.head = 1 end
   return item
 end
 
 local function QueueIsEmpty(queue)
-  return not queue or queue.first > queue.last
+  return not queue or queue.count == 0
 end
 
 local function ClearQueue(frame)
-  messageQueue[frame] = { first = 1, last = 0 }
+  messageQueue[frame] = { head = 1, count = 0 }
 end
 
 local function ResetTextAnchors(tickerFrame)
@@ -417,7 +398,7 @@ local function UpdateVisibility(core, frame, active)
 
   if InCombatLockdown() then
     tickerFrame.__visibilityKey = tickerFrame.__visibilityKey or {}
-    DeferKeyed(core, tickerFrame.__visibilityKey, function(targetFrame, visible)
+    core:DeferKeyed(tickerFrame.__visibilityKey, function(targetFrame, visible)
       if core:IsModuleActive("Ticker") then UpdateVisibility(core, targetFrame, visible) end
     end, frame, active)
     return
@@ -590,7 +571,7 @@ end
 local function QueueLine(core, frame, line, r, g, b)
   if IsChatRestricted() or not CanAccessFrame(frame) then return end
   if not FeatureCanOwnFrame(core, frame) then return end
-  if NS.CanAccessValue and not NS.CanAccessValue(line) then return end
+  if not NS.CanAccessValue(line) then return end
   if not IsChatFrameActiveTab(frame) then return end
 
   local tickerFrame = tickers[frame]
@@ -598,6 +579,7 @@ local function QueueLine(core, frame, line, r, g, b)
 
   local safeLine = NS.SafeToString(line)
   if safeLine == "" then return end
+  safeLine = NS.SafeTrunc(safeLine, MAX_MESSAGE_CHARS)
   r, g, b = SafeNumber(r), SafeNumber(g), SafeNumber(b)
   if not r or not g or not b then
     r, g, b = nil, nil, nil
@@ -637,7 +619,7 @@ local function QueueRefresh(core)
   NS.RunNextFrame(refreshKey, function()
     if not core:IsModuleActive("Ticker") then return end
     if InCombatLockdown() then
-      DeferKeyed(core, M.__applyDeferredKey, function()
+      core:DeferKeyed(M.__applyDeferredKey, function()
         if core:IsModuleActive("Ticker") then ApplyTickerState(core, false) end
       end)
     else
@@ -700,7 +682,7 @@ end
 
 ApplyTickerState = function(core, refreshListeners)
   if InCombatLockdown() then
-    DeferKeyed(core, M.__applyDeferredKey, function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if core:IsModuleActive("Ticker") then ApplyTickerState(core, refreshListeners) end
     end)
     return
@@ -741,8 +723,8 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
-  CancelDeferred(core, M.__cleanupDeferredKey)
-  chatRestricted = NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() or false
+  core:CancelDeferred(M.__cleanupDeferredKey)
+  chatRestricted = NS.IsChatMessagingRestricted()
   ApplyTickerState(core, true)
 end
 
@@ -752,7 +734,7 @@ end
 
 function M:OnDisable(core)
   NS.CancelScheduled(refreshKey)
-  CancelDeferred(core, M.__applyDeferredKey)
+  core:CancelDeferred(M.__applyDeferredKey)
   core:UnregisterAddMessageHooks(self)
 
   for frame, tickerFrame in pairs(tickers) do
@@ -767,7 +749,7 @@ function M:OnDisable(core)
     for frame in pairs(frameSnapshots) do RestoreFrameOwnership(frame) end
   end
   if InCombatLockdown() then
-    DeferKeyed(core, M.__cleanupDeferredKey, Cleanup)
+    core:DeferKeyed(M.__cleanupDeferredKey, Cleanup)
   else
     Cleanup()
   end
@@ -776,7 +758,7 @@ end
 function M:Refresh(core)
   if not core:IsModuleActive("Ticker") then return end
   if InCombatLockdown() then
-    DeferKeyed(core, M.__applyDeferredKey, function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if core:IsModuleActive("Ticker") then ApplyTickerState(core, false) end
     end)
     return

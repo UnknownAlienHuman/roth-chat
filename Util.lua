@@ -10,7 +10,7 @@ function NS.Unpack(values, first)
   return unpackValues(values, first or 1, values.n)
 end
 
-function NS.IsSecretValue(value)
+local function IsSecretValue(value)
   if type(_G.issecretvalue) ~= "function" then return false end
   local ok, secret = pcall(_G.issecretvalue, value)
   return not ok or secret == true
@@ -21,7 +21,7 @@ function NS.CanAccessValue(value)
     local ok, accessible = pcall(_G.canaccessvalue, value)
     return ok and accessible == true
   end
-  return not NS.IsSecretValue(value)
+  return not IsSecretValue(value)
 end
 
 function NS.CanAccessAllValues(...)
@@ -33,10 +33,6 @@ function NS.CanAccessAllValues(...)
     if not NS.CanAccessValue(select(index, ...)) then return false end
   end
   return true
-end
-
-function NS.IsInaccessibleValue(value)
-  return not NS.CanAccessValue(value)
 end
 
 function NS.SafeNumber(value, fallback)
@@ -189,7 +185,7 @@ local fadeObjects = {}
 local fadeUpdater = CreateFrame("Frame", "RothChatFader")
 
 local function CanFade(frame)
-  return frame and NS.CanAccessObject(frame)
+  return NS.CanAccessObject(frame)
 end
 
 local function StopIdleFader()
@@ -204,11 +200,12 @@ local function FadeOnUpdate(_, elapsed)
     else
       data.timer = data.timer + elapsed
       if data.timer >= data.duration then
-        fadeObjects[frame] = nil
         frame:SetAlpha(data.target)
         if data.callback then
           completed = completed or {}
-          completed[#completed + 1] = { data.callback, frame }
+          completed[#completed + 1] = { frame, data }
+        elseif fadeObjects[frame] == data then
+          fadeObjects[frame] = nil
         end
       else
         local progress = data.timer / data.duration - 1
@@ -216,19 +213,25 @@ local function FadeOnUpdate(_, elapsed)
       end
     end
   end
-  StopIdleFader()
-  -- Completion callbacks may start/stop other fades; run after iteration.
+  -- Keep completion identity until dispatch so an earlier callback can cancel
+  -- or replace a later completion from this same update.
   if completed then
     for _, completion in ipairs(completed) do
-      NS.SafeCall("RothChat:FadeComplete", completion[1], completion[2])
+      local frame, data = completion[1], completion[2]
+      if fadeObjects[frame] == data then
+        fadeObjects[frame] = nil
+        if CanFade(frame) then NS.SafeCall("RothChat:FadeComplete", data.callback, frame) end
+      end
     end
   end
+  StopIdleFader()
 end
 
 function NS.StopFading(frame, alpha)
-  if not frame then return end
+  if not NS.CanAccessValue(frame) or frame == nil then return end
   fadeObjects[frame] = nil
-  if alpha ~= nil and CanFade(frame) then frame:SetAlpha(NS.Clamp(NS.SafeNumber(alpha, 1), 0, 1)) end
+  alpha = NS.SafeNumber(alpha)
+  if alpha ~= nil and CanFade(frame) then frame:SetAlpha(NS.Clamp(alpha, 0, 1)) end
   StopIdleFader()
 end
 

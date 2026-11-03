@@ -9,13 +9,16 @@ local restricted = false
 local listeners = {}
 local replayed = {}
 local messageCount = 0
+local inaccessibleMessageCount = false
+local combatLocked = false
+local deferredJobs = {}
 local emittedFeed = {}
 local queueNextFrame = false
 local pendingNextFrame
-local windowName = "General"
 local layoutRevision = 1
-local windowInfoCalls = 0
 local sortCalls = 0
+local inaccessibleValue
+local inaccessibleObject
 local originalSort = table.sort
 table.sort = function(...)
   sortCalls = sortCalls + 1
@@ -27,7 +30,7 @@ _G.RothChat = {
     registeredModule = module
   end,
 }
-_G.InCombatLockdown = function() return false end
+_G.InCombatLockdown = function() return combatLocked end
 _G.time = function() return 12345 end
 _G.GetServerTime = function() return 12345 end
 _G.date = function(format, timestamp)
@@ -46,18 +49,13 @@ _G.TimeUtil = {
     return "[12:34] "
   end,
 }
-_G.FCF_GetChatWindowInfo = function(index)
-  assert(index == 1)
-  windowInfoCalls = windowInfoCalls + 1
-  return windowName
-end
-
 local fading = false
 local timeVisible = 42
 local fadeDuration = 7
 local maxLines = 128
 
 local frame = {
+  name = "General",
   isTemporary = false,
   inUse = true,
   messageTypeList = { "SAY", "GUILD" },
@@ -72,7 +70,10 @@ local frame = {
   SetFadeDuration = function(_, value) fadeDuration = value end,
   GetMaxLines = function() return maxLines end,
   SetMaxLines = function(_, value) maxLines = value end,
-  GetNumMessages = function() return messageCount end,
+  GetNumMessages = function()
+    if inaccessibleMessageCount then return false end
+    return messageCount
+  end,
   AddMessage = function(_, text, r, g, b)
     replayed[#replayed + 1] = { text, r, g, b }
     messageCount = messageCount + 1
@@ -92,7 +93,10 @@ local NS = {
     return fallback
   end,
   IsChatMessagingRestricted = function() return restricted end,
-  CanAccessValue = function(value) return value ~= "inaccessible-color" end,
+  CanAccessValue = function(value) return value == nil or (value ~= "inaccessible-color" and value ~= inaccessibleValue) end,
+  CanAccessObject = function(value)
+    return type(value) == "table" and value ~= inaccessibleObject
+  end,
   SafeToString = tostring,
   SafeTrunc = function(text, maxChars) return text:sub(1, maxChars) end,
   Clamp = function(value, minValue, maxValue)
@@ -152,7 +156,8 @@ local core = {
   Emit = function(_, event, frameArg, text, r, g, b, timestamp)
     emittedFeed[#emittedFeed + 1] = { event, frameArg, text, r, g, b, timestamp }
   end,
-  Defer = function(_, callback) callback() end,
+  DeferKeyed = function(_, key, callback) deferredJobs[key] = callback end,
+  CancelDeferred = function(_, key) deferredJobs[key] = nil end,
 }
 
 module:Init(core)
@@ -172,9 +177,8 @@ assert(legacySlotCount == 2)
 assert(next(core.db.restore.frames) == nil, "legacy rows must not enter live v3 buckets")
 
 module:OnEnable(core)
-local initialWindowInfoCalls, initialSortCalls = windowInfoCalls, sortCalls
-assert(initialWindowInfoCalls == 1 and initialSortCalls == 2,
-  "initial layout pass should compute one fingerprint and sort each configuration list once")
+local initialSortCalls = sortCalls
+assert(initialSortCalls == 2, "initial layout pass should sort each configuration list once")
 assert(fading == true)
 assert(timeVisible == 12)
 assert(fadeDuration == 3)
@@ -204,7 +208,7 @@ assert(entry[1] == 12345)
 assert(entry[2] == "|Hplayer:Tester|h[Tester]|h ???")
 assert(entry[3] == 0.1 and entry[4] == 0.2 and entry[5] == 0.3)
 assert(entry[6] == 2)
-assert(windowInfoCalls == initialWindowInfoCalls and sortCalls == initialSortCalls,
+assert(sortCalls == initialSortCalls,
   "AddMessage and export must reuse fingerprints only while layout revision is unchanged")
 assert(emittedFeed[#emittedFeed][1] == "CHAT_FEED")
 assert(emittedFeed[#emittedFeed][4] == 0.1 and emittedFeed[#emittedFeed][5] == 0.2 and emittedFeed[#emittedFeed][6] == 0.3)
@@ -213,6 +217,30 @@ assert(emittedFeed[#emittedFeed][4] == 0.1 and emittedFeed[#emittedFeed][5] == 0
 -- CopyOverlay flattens those links later in its copy-only normalization step.
 assert(core:GetRestoreText(frame, 500, false) == "|Hplayer:Tester|h[Tester]|h ???")
 assert(core:GetRestoreText(frame, 500, true) == "[12:34:56] |Hplayer:Tester|h[Tester]|h ???")
+
+-- Fingerprint permission is checked on every access, even when the revision
+-- matches a cached value. Unavailable identity never binds or exposes a bucket.
+local entriesBeforeDeniedIdentity = #core.db.restore.frames[1].entries
+inaccessibleValue = "SAY"
+addMessageHook(frame, "denied group field", 1, 1, 1)
+assert(#core.db.restore.frames[1].entries == entriesBeforeDeniedIdentity)
+assert(core:GetRestoreText(frame, 500, false) == "")
+inaccessibleValue = nil
+
+inaccessibleObject = frame.messageTypeList
+addMessageHook(frame, "denied group table", 1, 1, 1)
+assert(#core.db.restore.frames[1].entries == entriesBeforeDeniedIdentity)
+inaccessibleObject = nil
+
+inaccessibleValue = "General"
+addMessageHook(frame, "denied channel field", 1, 1, 1)
+assert(#core.db.restore.frames[1].entries == entriesBeforeDeniedIdentity)
+inaccessibleValue = nil
+
+inaccessibleObject = frame.channelList
+addMessageHook(frame, "denied channel table", 1, 1, 1)
+assert(#core.db.restore.frames[1].entries == entriesBeforeDeniedIdentity)
+inaccessibleObject = nil
 
 messageCount = 0
 module:OnLogin(core)
@@ -235,6 +263,16 @@ replayed = {}
 module:OnLogin(core)
 assert(#replayed == 0, "non-empty frame must suppress replay")
 
+-- An inaccessible native message count cannot prove that a frame is empty.
+messageCount = 0
+inaccessibleValue = false
+inaccessibleMessageCount = true
+replayed = {}
+module:OnLogin(core)
+assert(#replayed == 0, "unknown native frame state must not trigger history replay")
+inaccessibleMessageCount = false
+inaccessibleValue = nil
+
 -- Native timestamp ownership is reconstructed for direct AddMessage replay.
 runtimeActive = false
 module:OnDisable(core)
@@ -250,13 +288,13 @@ assert(replayed[1][1] == "[12:34] |Hplayer:Tester|h[Tester]|h ???")
 
 -- Reusing the same numeric slot with a different window configuration retires
 -- the prior bucket instead of leaking its history into the new window.
-windowName = "Loot"
+frame.name = "Loot"
 frame.messageTypeList = { "LOOT" }
-local beforeLayoutChangeWindowInfoCalls, beforeLayoutChangeSortCalls = windowInfoCalls, sortCalls
+local beforeLayoutChangeSortCalls = sortCalls
 layoutRevision = layoutRevision + 1
 assert(core:GetRestoreText(frame, 500, false) == "")
 assert(core.db.restore.frames[1] == nil)
-assert(windowInfoCalls == beforeLayoutChangeWindowInfoCalls + 1 and sortCalls == beforeLayoutChangeSortCalls + 2,
+assert(sortCalls == beforeLayoutChangeSortCalls + 2,
   "a changed layout revision must recompute the frame fingerprint")
 
 nativeFormat = nil
@@ -269,13 +307,22 @@ assert(maxLines == 128, "closing must return frame settings to Blizzard")
 
 -- Inaccessible display colors are discarded before they enter either storage
 -- or the synchronous feed consumed by other modules.
-local beforeCloseAddWindowInfoCalls = windowInfoCalls
+local beforeCloseAddSortCalls = sortCalls
 addMessageHook(frame, "safe text, inaccessible color", "inaccessible-color", 0.4, 0.5)
-assert(windowInfoCalls == beforeCloseAddWindowInfoCalls + 1,
+assert(sortCalls == beforeCloseAddSortCalls + 2,
   "closing a frame must invalidate its cached fingerprint")
 local safeColorEntry = core.db.restore.frames[1].entries[#core.db.restore.frames[1].entries]
 assert(safeColorEntry[3] == nil)
 assert(emittedFeed[#emittedFeed][4] == nil)
+
+local beforeInaccessibleFrameFlag = #core.db.restore.frames[1].entries
+inaccessibleValue = false
+frame.isTemporary = inaccessibleValue
+addMessageHook(frame, "inaccessible frame flag", 1, 1, 1)
+assert(#core.db.restore.frames[1].entries == beforeInaccessibleFrameFlag,
+  "frame persistence identity must stop when its temporary flag is inaccessible")
+frame.isTemporary = false
+inaccessibleValue = nil
 
 local beforeRestrictedWrite = #core.db.restore.frames[1].entries
 local beforeRestrictedFeed = #emittedFeed
@@ -312,11 +359,35 @@ assert(fadeDuration == 7)
 assert(maxLines == 128)
 assert(addMessageHook == nil)
 
-local beforeDisableReenableCalls = windowInfoCalls
+local beforeDisableReenableCalls = sortCalls
 runtimeActive = true
 module:OnEnable(core)
-assert(windowInfoCalls == beforeDisableReenableCalls + 1,
+assert(sortCalls == beforeDisableReenableCalls + 2,
   "module disable must invalidate frame fingerprint caches")
+runtimeActive = false
+module:OnDisable(core)
+
+-- Combat-delayed setup has one stable key and is dropped on disable.
+combatLocked = true
+runtimeActive = true
+module:OnEnable(core)
+local deferredKey, deferredApply = next(deferredJobs)
+assert(deferredKey and type(deferredApply) == "function")
+local scansBeforeCancel = sortCalls
+runtimeActive = false
+module:OnDisable(core)
+assert(next(deferredJobs) == nil, "disable must cancel deferred Restore setup")
+assert(sortCalls == scansBeforeCancel, "canceled Restore work must not inspect frame layouts")
+
+runtimeActive = true
+module:OnEnable(core)
+local reenabledKey, latestApply = next(deferredJobs)
+assert(reenabledKey == deferredKey and type(latestApply) == "function",
+  "Restore re-enable must coalesce on the same logical job")
+combatLocked = false
+latestApply()
+deferredJobs[reenabledKey] = nil
+assert(sortCalls == scansBeforeCancel + 2, "only one current Restore job should inspect the layout")
 runtimeActive = false
 module:OnDisable(core)
 table.sort = originalSort
@@ -333,5 +404,44 @@ assert(v1Core.db.restore.frames[3] == nil)
 assert(v1Core.db.restore.legacyFrames.version == 1)
 assert(v1Core.db.restore.legacyFrames.frames[3] == v1Bucket,
   "v1 migration must preserve old bucket references in the recovery snapshot")
+
+-- Inaccessible restore/frame tables suspend initialization without repairing
+-- or replacing state that the current addon cannot inspect.
+local deniedFrames = { [1] = { entries = {} } }
+local deniedRestore = { version = 3, frames = deniedFrames }
+core.db.restore = deniedRestore
+inaccessibleObject = deniedRestore
+module:Init(core)
+assert(module.db == nil and core.db.restore == deniedRestore)
+assert(deniedRestore.version == 3 and deniedRestore.frames == deniedFrames)
+inaccessibleObject = deniedFrames
+module:Init(core)
+assert(module.db == nil and core.db.restore == deniedRestore)
+assert(deniedRestore.version == 3 and deniedRestore.frames == deniedFrames)
+inaccessibleObject = nil
+
+-- A future schema remains byte-for-byte owned by its newer writer and Restore
+-- neither reads, mutates nor replays its unknown rows.
+local futureBucket = { entries = { { 12345, "future schema row" } } }
+local futureFrames = { [1] = futureBucket }
+local futureRestore = { version = 4, frames = futureFrames, futureField = "keep" }
+core.db.restore = futureRestore
+module:Init(core)
+assert(module.db == nil, "unknown newer Restore schemas must suspend persistence")
+runtimeActive = true
+module:OnEnable(core)
+addMessageHook(frame, "must not enter a future store", 1, 1, 1)
+assert(core:GetRestoreText(frame, 500, true) == "")
+assert(futureRestore.version == 4 and futureRestore.frames == futureFrames)
+assert(futureRestore.frames[1] == futureBucket and futureRestore.futureField == "keep")
+replayed = {}
+module:OnLogin(core)
+assert(#replayed == 0, "Restore must not replay unknown newer rows")
+listeners.CHAT_FRAME_CLOSED(nil, core, frame)
+assert(futureRestore.version == 4 and futureRestore.frames == futureFrames,
+  "frame lifecycle cleanup must not mutate a future store")
+runtimeActive = false
+module:OnDisable(core)
+assert(core.db.restore == futureRestore and futureRestore.version == 4)
 
 print("restore_spec: ok")

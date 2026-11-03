@@ -13,17 +13,18 @@ local M = {
 local overlays = setmetatable({}, { __mode = "k" })
 local EMPTY_COPY_PLACEHOLDER = "(No copyable chat lines available.)"
 local copyActive = false
+local DEFERRED_APPLY_KEY = {}
 
 local function IsEnabled(core)
   return copyActive and core and core:IsModuleActive("CopyOverlay")
 end
 
 local function IsActiveChatFrame(chatFrame)
-  return chatFrame and (not NS.IsActiveChatFrame or NS.IsActiveChatFrame(chatFrame))
+  return NS.IsActiveChatFrame(chatFrame)
 end
 
 local function IsChatRestricted()
-  return NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() or false
+  return NS.IsChatMessagingRestricted()
 end
 
 local function SanitizeName(value)
@@ -42,16 +43,16 @@ end
 local function CollectFromFontStrings(chatFrame, includeTimestamps)
   if IsChatRestricted() then return "" end
   if not chatFrame then return "" end
-  if NS.CanAccessObject and not NS.CanAccessObject(chatFrame) then return "" end
+  if not NS.CanAccessObject(chatFrame) then return "" end
   if type(chatFrame.GetRegions) ~= "function" then return "" end
 
   local out = {}
   for _, region in ipairs({ chatFrame:GetRegions() }) do
-    if region and (not NS.CanAccessObject or NS.CanAccessObject(region))
+    if region and NS.CanAccessObject(region)
       and region.GetObjectType and region:GetObjectType() == "FontString" and region.GetText
     then
       local ok, text = pcall(region.GetText, region)
-      if ok and (not NS.CanAccessValue or NS.CanAccessValue(text)) then
+      if ok and NS.CanAccessValue(text) then
         local normalized = NS.NormalizeCopyText(text, includeTimestamps)
         if normalized ~= "" then out[#out + 1] = normalized end
       end
@@ -250,7 +251,7 @@ end
 local function ToggleOverlay(core, chatFrame)
   if not IsEnabled(core) or not chatFrame then return end
   if IsChatRestricted() then return end
-  chatFrame = (NS.ResolveActiveDockChatFrame and NS.ResolveActiveDockChatFrame(chatFrame)) or chatFrame
+  chatFrame = NS.ResolveActiveDockChatFrame(chatFrame)
   if not IsActiveChatFrame(chatFrame) then return end
 
   local overlay = BuildOverlay(core, chatFrame)
@@ -300,9 +301,14 @@ local function ApplyToChatFrame(core, chatFrame)
 end
 
 local function ApplyAll(core)
-  for _, chatFrame in ipairs(NS.GetActiveChatFrames and NS.GetActiveChatFrames() or {}) do
+  for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do
     ApplyToChatFrame(core, chatFrame)
   end
+end
+
+local function ApplyDeferred()
+  local core = M.core
+  if IsEnabled(core) then ApplyAll(core) end
 end
 
 function M:Init(core)
@@ -315,9 +321,7 @@ function M:OnEnable(core)
   core:EnsureChatLifecycleHooks()
 
   if InCombatLockdown() then
-    core:Defer(function()
-      if IsEnabled(core) then ApplyAll(core) end
-    end)
+    core:DeferKeyed(DEFERRED_APPLY_KEY, ApplyDeferred)
   else
     ApplyAll(core)
   end
@@ -346,6 +350,7 @@ end
 
 function M:OnDisable(core)
   copyActive = false
+  core:CancelDeferred(DEFERRED_APPLY_KEY)
   for _, overlay in pairs(overlays) do
     if overlay then
       overlay:Hide()

@@ -10,6 +10,7 @@ local inCombat = false
 local refreshes = {}
 local moduleCalls = {}
 local presetCalls = {}
+local notified = {}
 
 local function recordControl(kind, category, setting, options)
   controls[#controls + 1] = {
@@ -79,6 +80,7 @@ end
 function Settings.CreateColorSwatch(category, setting, tooltip)
   recordControl("color", category, setting, tooltip)
 end
+function Settings.NotifyUpdate(variable) notified[variable] = (notified[variable] or 0) + 1 end
 function Settings.RegisterAddOnCategory(category)
   category.registered = true
 end
@@ -178,6 +180,7 @@ end
 
 _G.RothChat = core
 local ns = {
+  CanAccessValue = function() return true end,
   SafeCall = function(_, fn, ...) return pcall(fn, ...) end,
 }
 assert(loadfile("Options.lua"))("RothChat", ns)
@@ -223,6 +226,16 @@ assert(#presetCalls == 0)
 setting("ROTHCHAT_STYLE_PRESET").setter("obsidian")
 assert(presetCalls[1][1] == "style" and saved.stylePreset == "obsidian")
 assert(refreshes.Style == 1)
+assert(notified.ROTHCHAT_STYLE_BACKGROUND == 1)
+assert(notified.ROTHCHAT_STYLE_BACKGROUND_ALPHA == 1)
+assert(notified.ROTHCHAT_STYLE_BACKGROUND_COLOR == 1)
+assert(notified.ROTHCHAT_STYLE_BORDER == 1)
+assert(notified.ROTHCHAT_STYLE_BORDER_COLOR == 1)
+assert(notified.ROTHCHAT_TIMESTAMP_COLOR == 1)
+setting("ROTHCHAT_FONT_PRESET").setter("readable")
+assert(notified.ROTHCHAT_STYLE_FONT == 1 and notified.ROTHCHAT_STYLE_SHADOW == 1)
+setting("ROTHCHAT_TEXT_SIZE_PRESET").setter("large")
+assert(notified.ROTHCHAT_STYLE_FONT_SIZE == 1)
 
 -- Module toggles save immediately but defer runtime lifecycle changes in combat.
 inCombat = true

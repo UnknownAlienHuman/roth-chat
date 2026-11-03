@@ -15,6 +15,8 @@ For chat, taint, or restricted-value changes, read the current pinned chat and s
 
 Read `RothChat.toc` for the authoritative runtime order. In broad terms: bundled libraries; `Util.lua`, `Platform.lua`, `VisualPrimitives.lua`, `ChatText.lua`; `Core.lua`, `CoreListeners.lua`, `CoreDispatch.lua`, `ChatLifecycle.lua`; feature modules; then `Options.lua`.
 
+Shared `NS` helpers in that order are required dependencies. Call them directly; keep optional-client and external-library capability checks at the integration boundary. Use `core:DeferKeyed` with a stable owner/action key and cancel it on teardown.
+
 - `Util.lua`: ordinary-value safety, scheduling, fades, and bounded generic helpers.
 - `Platform.lua`: client API/frame adapters, diagnostics, restriction queries, and frame discovery.
 - `VisualPrimitives.lua`: applied decoration and its textures.
@@ -78,6 +80,7 @@ Controls owns its mouse-wheel wrapper while active and delegates to the captured
 - Scheduler/fade update scripts run only while work is pending.
 - Coalesce chat lifecycle/layout updates and combat-deferred work; cancel stale keyed jobs.
 - Keep Restore and Ticker data bounded; do not scan the full database per message.
+- Unknown newer persistence schemas remain untouched; suspend their reader/writer until a supported schema is available.
 - Reuse one `AddMessage` hook per frame and one dispatcher per event.
 - Keep error reporting rate-limited and do not include raw callback errors or chat content in diagnostics.
 - Run `python3 scripts/validate.py --lua lua5.1 --lua lua5.4` for the local full gate, plus relevant focused specs. The Actions workflow is manual `workflow_dispatch` only. Report exactly which checks ran; do not imply a whole-suite, CI, or live-client pass from a focused test.

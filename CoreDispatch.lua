@@ -20,7 +20,10 @@ end
 
 local function Flush(state)
   if state.depth > 0 then return end
-  Compact(state.entries)
+  if state.dirty then
+    Compact(state.entries)
+    state.dirty = nil
+  end
   for index = 1, #state.pending do
     local entry = state.pending[index]
     if entry[1] then InsertSorted(state.entries, entry) end
@@ -39,7 +42,10 @@ end
 local function RemoveOwner(state, owner)
   for _, entries in ipairs({ state.entries, state.pending }) do
     for _, entry in ipairs(entries) do
-      if entry[2] == owner then entry[1] = nil end
+      if entry[1] and entry[2] == owner then
+        entry[1] = nil
+        state.dirty = true
+      end
     end
   end
 end
@@ -139,7 +145,6 @@ end
 -- AddMessage observers receive displayed ordinary text and RGB only. Line IDs,
 -- access IDs and trailing opaque metadata never enter addon feature callbacks.
 local messageState = { entries = {}, pending = {}, depth = 0 }
-core._addMsgCallbacks = messageState.entries
 core._addMsgHooked = setmetatable({}, { __mode = "k" })
 
 local function Color(value)
@@ -164,6 +169,7 @@ end
 
 function core:EnsureAddMsgHookForFrame(frame)
   if not NS.CanAccessObject(frame) or self._addMsgHooked[frame] or type(frame.AddMessage) ~= "function" then return end
+  self:EnsureChatFrameLifecycleHooks(frame)
   local ok = pcall(hooksecurefunc, frame, "AddMessage", DispatchAddMessage)
   if ok then self._addMsgHooked[frame] = true end
 end

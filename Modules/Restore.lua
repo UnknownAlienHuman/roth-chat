@@ -24,6 +24,7 @@ local frameSnapshots = setmetatable({}, { __mode = "k" })
 local replayedFrames = setmetatable({}, { __mode = "k" })
 local frameFingerprintCache = setmetatable({}, { __mode = "k" })
 local lifecycleListenersRegistered = false
+local DEFERRED_APPLY_KEY = {}
 
 local function ClampInt(value, minValue, maxValue, defaultValue)
   value = tonumber(value)
@@ -39,21 +40,15 @@ local function GetMaxPerChat(core)
 end
 
 local function IsChatRestricted()
-  return NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() or false
+  return NS.IsChatMessagingRestricted()
 end
 
 local function IsAccessibleTable(value)
-  if NS.CanAccessObject then return NS.CanAccessObject(value) end
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return false end
-  return type(value) == "table"
+  return NS.CanAccessValue(value) and type(value) == "table" and NS.CanAccessObject(value)
 end
 
 local function GetPermanentSlotCount()
-  local count = NS.GetMaxPermanentChatWindows and NS.GetMaxPermanentChatWindows() or 10
-  if NS.CanAccessValue and not NS.CanAccessValue(count) then return 10 end
-  if NS.SafeNumber then count = NS.SafeNumber(count, 10) end
-  count = ClampInt(count, 0, 50, 10)
-  return count
+  return ClampInt(NS.SafeNumber(NS.GetMaxPermanentChatWindows(), 10), 0, 50, 10)
 end
 
 local function BuildLegacySnapshot(restore, previousVersion, oldFrames)
@@ -90,22 +85,48 @@ end
 
 local function EnsureDB(core)
   local db = core.db
-  if type(db.restore) ~= "table" then
-    db.restore = { version = DB_VERSION, frames = {} }
-  end
-  if type(db.restore.frames) ~= "table" then db.restore.frames = {} end
+  if not NS.CanAccessObject(db) then return nil end
 
-  local previousVersion = tonumber(db.restore.version) or 1
+  local restore = db.restore
+  if not NS.CanAccessValue(restore) then return nil end
+  if type(restore) == "table" then
+    if not IsAccessibleTable(restore) then return nil end
+  else
+    restore = { version = DB_VERSION, frames = {} }
+    db.restore = restore
+  end
+
+  local storedVersion = restore.version
+  if not NS.CanAccessValue(storedVersion) then return nil end
+  local previousVersion = 1
+  if storedVersion ~= nil then
+    previousVersion = NS.SafeNumber(storedVersion)
+    if not previousVersion or previousVersion < 1 or previousVersion ~= math.floor(previousVersion)
+      or previousVersion > DB_VERSION
+    then
+      return nil
+    end
+  end
+
+  local frames = restore.frames
+  if not NS.CanAccessValue(frames) then return nil end
+  if type(frames) == "table" then
+    if not IsAccessibleTable(frames) then return nil end
+  else
+    frames = {}
+    restore.frames = frames
+  end
+
   if previousVersion < DB_VERSION then
     -- Pre-v3 buckets were keyed only by ChatFrameN. Their original window
     -- owners cannot be proven, so keep bounded references in a non-replayable
     -- recovery snapshot and start live v3 buckets empty.
-    BuildLegacySnapshot(db.restore, previousVersion, db.restore.frames)
-    db.restore.frames = {}
+    BuildLegacySnapshot(restore, previousVersion, restore.frames)
+    restore.frames = {}
   end
 
-  db.restore.version = DB_VERSION
-  return db.restore
+  restore.version = DB_VERSION
+  return restore
 end
 
 local function GetTimeNow()
@@ -121,16 +142,22 @@ local function GetTimeNow()
 end
 
 local function IsPersistentChatFrame(chatFrame)
-  if not chatFrame then return false end
-  if NS.CanAccessObject and not NS.CanAccessObject(chatFrame) then return false end
-  if chatFrame.isTemporary then return false end
-  local index = NS.GetChatFrameIndex and NS.GetChatFrameIndex(chatFrame)
+  if not NS.CanAccessObject(chatFrame) then return false end
+  local isTemporary = chatFrame.isTemporary
+  if not NS.CanAccessValue(isTemporary) then return false end
+  if isTemporary then return false end
+
+  local index = NS.GetChatFrameIndex(chatFrame)
+  if not NS.CanAccessValue(index) then return false end
   if type(index) ~= "number" or index < 1 then return false end
-  return index <= (NS.GetMaxPermanentChatWindows and NS.GetMaxPermanentChatWindows() or index)
+
+  local maxWindows = NS.GetMaxPermanentChatWindows()
+  if not NS.CanAccessValue(maxWindows) then return false end
+  return index <= maxWindows
 end
 
 local function ReadAccessible(value)
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return "" end
+  if not NS.CanAccessValue(value) then return "" end
   if type(value) == "string" then return value end
   if type(value) == "number" or type(value) == "boolean" then return tostring(value) end
   return ""
@@ -141,27 +168,23 @@ local function EncodePart(value)
   return tostring(#value) .. ":" .. value
 end
 
-local function GetWindowName(chatFrame, index)
-  if type(_G.FCF_GetChatWindowInfo) == "function" then
-    local ok, name = pcall(_G.FCF_GetChatWindowInfo, index)
-    if ok and ReadAccessible(name) ~= "" then return ReadAccessible(name) end
+local function IsOrdinaryStringList(list)
+  if not IsAccessibleTable(list) then return false end
+  for key, value in pairs(list) do
+    local index = NS.SafeNumber(key)
+    if not index or index < 1 or index ~= math.floor(index)
+      or not NS.CanAccessValue(value) or type(value) ~= "string"
+    then
+      return false
+    end
   end
-
-  local name = chatFrame and chatFrame.name
-  if ReadAccessible(name) ~= "" then return ReadAccessible(name) end
-  if chatFrame and type(chatFrame.GetName) == "function" then
-    local ok, frameName = pcall(chatFrame.GetName, chatFrame)
-    if ok then return ReadAccessible(frameName) end
-  end
-  return ""
+  return true
 end
 
 local function CollectSortedList(list)
   local values = {}
-  if not IsAccessibleTable(list) then return values end
   for _, value in pairs(list) do
-    local ordinary = ReadAccessible(value)
-    if ordinary ~= "" then values[#values + 1] = ordinary end
+    values[#values + 1] = value
   end
   table.sort(values)
   return values
@@ -176,44 +199,45 @@ end
 local function GetFrameFingerprint(chatFrame)
   if IsChatRestricted() or not IsPersistentChatFrame(chatFrame) then return nil end
 
-  local revision
-  local core = M.core
-  if core and type(core.GetChatLayoutRevision) == "function" then
-    local ok, value = pcall(core.GetChatLayoutRevision, core)
-    if ok and (not NS.CanAccessValue or NS.CanAccessValue(value)) and type(value) == "number" then
-      revision = value
-    end
+  local frameName = chatFrame.name
+  local groups = chatFrame.messageTypeList
+  local channels = chatFrame.channelList
+  if not NS.CanAccessValue(frameName) or type(frameName) ~= "string"
+    or not IsOrdinaryStringList(groups) or not IsOrdinaryStringList(channels)
+  then
+    frameFingerprintCache[chatFrame] = nil
+    return nil
   end
 
+  local core = M.core
+  local revision = NS.SafeNumber(core:GetChatLayoutRevision(chatFrame))
   if revision ~= nil then
     local cached = frameFingerprintCache[chatFrame]
     if IsAccessibleTable(cached) then
       local cachedRevision = cached.revision
       local cachedFingerprint = cached.fingerprint
-      if (not NS.CanAccessValue or NS.CanAccessValue(cachedRevision))
+      if NS.CanAccessValue(cachedRevision)
         and type(cachedRevision) == "number"
         and cachedRevision == revision
-        and (not NS.CanAccessValue or NS.CanAccessValue(cachedFingerprint))
+        and NS.CanAccessValue(cachedFingerprint)
         and type(cachedFingerprint) == "string"
       then
         return cachedFingerprint
       end
     end
   else
-    -- A missing or inaccessible revision cannot authorize a cache hit.
+    -- An unavailable revision cannot authorize a cache hit.
     frameFingerprintCache[chatFrame] = nil
   end
 
   local index = NS.GetChatFrameIndex(chatFrame)
-  local groups = CollectSortedList(chatFrame.messageTypeList)
-  local channels = CollectSortedList(chatFrame.channelList)
-
+  if not NS.CanAccessValue(index) then return nil end
   local fingerprint = table.concat({
     "window-v1",
     EncodePart(index),
-    EncodePart(GetWindowName(chatFrame, index)),
-    EncodePart(EncodeList(groups)),
-    EncodePart(EncodeList(channels)),
+    EncodePart(frameName),
+    EncodePart(EncodeList(CollectSortedList(groups))),
+    EncodePart(EncodeList(CollectSortedList(channels))),
   }, "|")
   if revision ~= nil and not IsChatRestricted() then
     frameFingerprintCache[chatFrame] = {
@@ -238,7 +262,7 @@ local function GetMatchingBucket(restoreDB, chatFrame, create)
   if bucket ~= nil then
     if not IsAccessibleTable(bucket) then return nil end
     local previousFingerprint = bucket.fingerprint
-    if NS.CanAccessValue and not NS.CanAccessValue(previousFingerprint) then return nil end
+    if not NS.CanAccessValue(previousFingerprint) then return nil end
     if previousFingerprint ~= fingerprint then
       frames[index] = nil
       bucket = nil
@@ -277,7 +301,7 @@ end
 
 local function ReadEntryValue(entry, index)
   local value = entry[index]
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return nil, false end
+  if not NS.CanAccessValue(value) then return nil, false end
   return value, true
 end
 
@@ -329,7 +353,7 @@ local function BuildReplayText(core, entry)
 
   if not timestamp then return text end
 
-  if NS.HasNativeChatTimestamps and NS.HasNativeChatTimestamps() then
+  if NS.HasNativeChatTimestamps() then
     local prefix = NS.FormatNativeChatTimestamp(timestamp)
     if prefix ~= "" then return prefix .. text end
   end
@@ -390,20 +414,20 @@ local function RestoreFrameSettings(chatFrame)
 end
 
 local function SanitizeColor(value)
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return nil end
+  if not NS.CanAccessValue(value) then return nil end
   if type(value) ~= "number" then return nil end
   return NS.Clamp(value, 0, 1)
 end
 
 local function OnAddMessage(frame, text, r, g, b)
-  if IsChatRestricted() then return end
+  if not M.db or IsChatRestricted() then return end
   if not M.active or M._restoring or frame.__rothRestoring then return end
   if not M.core or not M.core:IsModuleActive("Restore") then return end
   if not IsPersistentChatFrame(frame) then return end
 
   local maxLines = GetMaxPerChat(M.core)
   if maxLines <= 0 then return end
-  if NS.CanAccessValue and not NS.CanAccessValue(text) then return end
+  if not NS.CanAccessValue(text) then return end
   if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return end
 
@@ -432,14 +456,14 @@ local function OnAddMessage(frame, text, r, g, b)
 end
 
 local function GetFrameMessageCount(chatFrame)
-  if not chatFrame or type(chatFrame.GetNumMessages) ~= "function" then return 0 end
+  if not NS.CanAccessObject(chatFrame) or type(chatFrame.GetNumMessages) ~= "function" then return nil end
   local ok, count = pcall(chatFrame.GetNumMessages, chatFrame)
-  if not ok then return 0 end
-  return tonumber(count) or 0
+  if not ok or not NS.CanAccessValue(count) then return nil end
+  return NS.SafeNumber(count)
 end
 
 local function RestoreChatFrame(self, chatFrame, maxLines)
-  if IsChatRestricted() or replayedFrames[chatFrame] then return end
+  if not self.db or IsChatRestricted() or replayedFrames[chatFrame] then return end
   if not IsPersistentChatFrame(chatFrame) or not NS.IsActiveChatFrame(chatFrame) then return end
 
   local bucket, index = GetMatchingBucket(self.db, chatFrame, false)
@@ -451,7 +475,8 @@ local function RestoreChatFrame(self, chatFrame, maxLines)
   -- Blizzard or another addon may already have populated the ScrollingMessageFrame.
   -- AddMessage appends; replaying here would duplicate or place old rows after
   -- current rows, so an already non-empty frame is the authoritative owner.
-  if GetFrameMessageCount(chatFrame) > 0 then
+  local existingMessageCount = GetFrameMessageCount(chatFrame)
+  if not existingMessageCount or existingMessageCount > 0 then
     replayedFrames[chatFrame] = true
     return
   end
@@ -492,11 +517,17 @@ local function ApplyAllActive(core)
 end
 
 local function ReplayAllActive(core)
+  if not M.db then return end
   local maxLines = GetMaxPerChat(core)
   if maxLines <= 0 then return end
   for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do
     RestoreChatFrame(M, chatFrame, maxLines)
   end
+end
+
+local function ApplyDeferred()
+  local core = M.core
+  if core and core:IsModuleActive("Restore") then ApplyAllActive(core) end
 end
 
 local function RegisterLifecycleListeners(core)
@@ -517,7 +548,7 @@ local function RegisterLifecycleListeners(core)
     RestoreFrameSettings(chatFrame)
     replayedFrames[chatFrame] = nil
 
-    if IsPersistentChatFrame(chatFrame) then
+    if M.db and IsPersistentChatFrame(chatFrame) then
       local index = NS.GetChatFrameIndex(chatFrame)
       if index then M.db.frames[index] = nil end
     end
@@ -540,7 +571,7 @@ function M:Init(core)
   self.active = false
 
   core.GetRestoreText = function(_, chatFrame, maxLines, includeTimestamps)
-    if not self.active or not core:IsModuleActive("Restore") then return "" end
+    if not self.db or not self.active or not core:IsModuleActive("Restore") then return "" end
     if core:Get("restoreEnabled") == false then return "" end
     if IsChatRestricted() then return "" end
 
@@ -561,9 +592,7 @@ function M:OnEnable(core)
   RegisterLifecycleListeners(core)
 
   if InCombatLockdown() then
-    core:Defer(function()
-      if core:IsModuleActive("Restore") then ApplyAllActive(core) end
-    end)
+    core:DeferKeyed(DEFERRED_APPLY_KEY, ApplyDeferred)
   else
     ApplyAllActive(core)
   end
@@ -581,6 +610,7 @@ end
 
 function M:OnDisable(core)
   self.active = false
+  core:CancelDeferred(DEFERRED_APPLY_KEY)
   self._restoring = false
   lifecycleListenersRegistered = false
   frameFingerprintCache = setmetatable({}, { __mode = "k" })

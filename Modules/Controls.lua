@@ -5,7 +5,7 @@
 --   * Own accessory hover registration
 --   * Provide fast and smooth scrolling without double-processing Blizzard scroll
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 
 local M = {
@@ -18,8 +18,9 @@ local state = { perChat = {} }
 local wheelSnapshots = setmetatable({}, { __mode = "k" })
 local controlsActive = false
 local lifecycleListenersRegistered = false
-local restoreDeferred = false
-local refreshDeferred = false
+M.__applyDeferredKey = {}
+M.__refreshDeferredKey = {}
+M.__restoreDeferredKey = {}
 
 local UpdateForChat
 local RegisterHoverFrame
@@ -30,7 +31,7 @@ local function ControlsEnabled()
 end
 
 local function CanUseObject(object)
-  return object ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(object))
+  return object ~= nil and NS.CanAccessObject(object)
 end
 
 local function CaptureWheelOwnership(chatFrame)
@@ -42,13 +43,13 @@ local function CaptureWheelOwnership(chatFrame)
   end
   if type(chatFrame.IsMouseWheelEnabled) == "function" then
     local ok, enabled = pcall(chatFrame.IsMouseWheelEnabled, chatFrame)
-    if ok and (not NS.CanAccessValue or NS.CanAccessValue(enabled)) then
+    if ok and NS.CanAccessValue(enabled) then
       snapshot.mouseWheelEnabled = enabled and true or false
     end
   end
   if type(chatFrame.GetClipsChildren) == "function" then
     local ok, clips = pcall(chatFrame.GetClipsChildren, chatFrame)
-    if ok and (not NS.CanAccessValue or NS.CanAccessValue(clips)) then
+    if ok and NS.CanAccessValue(clips) then
       snapshot.clipsChildren = clips and true or false
     end
   end
@@ -65,11 +66,21 @@ local function RestoreWheelOwnership(chatFrame)
       pcall(chatFrame.SetScript, chatFrame, "OnMouseWheel", snapshot.script)
     end
   end
-  if snapshot.mouseWheelEnabled ~= nil and type(chatFrame.EnableMouseWheel) == "function" then
-    pcall(chatFrame.EnableMouseWheel, chatFrame, snapshot.mouseWheelEnabled)
+  if snapshot.mouseWheelEnabled ~= nil and type(chatFrame.IsMouseWheelEnabled) == "function"
+    and type(chatFrame.EnableMouseWheel) == "function"
+  then
+    local ok, current = pcall(chatFrame.IsMouseWheelEnabled, chatFrame)
+    if ok and NS.CanAccessValue(current) and current == true then
+      pcall(chatFrame.EnableMouseWheel, chatFrame, snapshot.mouseWheelEnabled)
+    end
   end
-  if snapshot.clipsChildren ~= nil and type(chatFrame.SetClipsChildren) == "function" then
-    pcall(chatFrame.SetClipsChildren, chatFrame, snapshot.clipsChildren)
+  if snapshot.clipsChildren ~= nil and type(chatFrame.GetClipsChildren) == "function"
+    and type(chatFrame.SetClipsChildren) == "function"
+  then
+    local ok, current = pcall(chatFrame.GetClipsChildren, chatFrame)
+    if ok and NS.CanAccessValue(current) and current == true then
+      pcall(chatFrame.SetClipsChildren, chatFrame, snapshot.clipsChildren)
+    end
   end
 
   wheelSnapshots[chatFrame] = nil
@@ -140,8 +151,8 @@ end
 local function IsInteractableChatFrame(cf)
   if not CanUseObject(cf) or not cf:IsShown() then return false end
 
-  if NS.IsDockedChatFrame and NS.IsDockedChatFrame(cf) then
-    local selected = NS.GetSelectedDockChatFrame and NS.GetSelectedDockChatFrame()
+  if NS.IsDockedChatFrame(cf) then
+    local selected = NS.GetSelectedDockChatFrame()
     if selected and selected ~= cf then return false end
   end
 
@@ -549,7 +560,7 @@ end
 
 local function OnSmoothScrollAddMessage(chatFrame)
   if not controlsActive then return end
-  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then return end
+  if NS.IsChatMessagingRestricted() then return end
   if not CanUseObject(chatFrame) then return end
   local core = M.core
   if not core or not core:Get("smoothScrollEnabled") or not chatFrame:IsVisible() then return end
@@ -693,13 +704,9 @@ end
 
 local function RefreshAllChats(core)
   if InCombatLockdown() then
-    if not refreshDeferred then
-      refreshDeferred = true
-      core:Defer(function()
-        refreshDeferred = false
-        if controlsActive then RefreshAllChats(core) end
-      end)
-    end
+    core:DeferKeyed(M.__refreshDeferredKey, function()
+      if controlsActive then RefreshAllChats(core) end
+    end)
     return
   end
   for _, cf in ipairs(NS.GetChatFrames()) do
@@ -777,6 +784,9 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
+  core:CancelDeferred(M.__applyDeferredKey)
+  core:CancelDeferred(M.__refreshDeferredKey)
+  core:CancelDeferred(M.__restoreDeferredKey)
   controlsActive = true
   lifecycleListenersRegistered = false
   core:RegisterAddMessageHook(OnSmoothScrollAddMessage, self, 50)
@@ -799,7 +809,7 @@ function M:OnEnable(core)
   end
 
   if InCombatLockdown() then
-    core:Defer(function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if core:IsModuleActive("Controls") then ApplyAll() end
     end)
   else
@@ -815,6 +825,9 @@ function M:OnDisable(core)
   lifecycleListenersRegistered = false
   core:UnregisterAddMessageHooks(self)
   NS.CancelScheduled(M)
+  core:CancelDeferred(M.__applyDeferredKey)
+  core:CancelDeferred(M.__refreshDeferredKey)
+  core:CancelDeferred(M.__restoreDeferredKey)
 
   local function RestoreControlsState()
     if controlsActive then return end
@@ -841,13 +854,7 @@ function M:OnDisable(core)
   end
 
   if InCombatLockdown() then
-    if not restoreDeferred then
-      restoreDeferred = true
-      core:Defer(function()
-        restoreDeferred = false
-        RestoreControlsState()
-      end)
-    end
+    core:DeferKeyed(M.__restoreDeferredKey, RestoreControlsState)
   else
     RestoreControlsState()
   end

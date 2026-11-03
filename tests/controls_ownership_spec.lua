@@ -1,6 +1,7 @@
 -- Controls owns the chat-frame wheel script while enabled, then restores the
 -- prior script, wheel enablement and clipping state without building a second
 -- smooth-scroll driver on re-enable.
+local unpackValues = unpack or table.unpack
 local inCombat = false
 _G.InCombatLockdown = function() return inCombat end
 _G.UIParent = {}
@@ -20,9 +21,15 @@ local function newFrame(name)
   function frame:GetAlpha() return self.alpha end
   function frame:EnableMouse(value) self.mouseEnabled = value end
   function frame:IsMouseEnabled() return self.mouseEnabled end
-  function frame:EnableMouseWheel(value) self.mouseWheelEnabled = value end
+  function frame:EnableMouseWheel(value)
+    self.mouseWheelChanges = (self.mouseWheelChanges or 0) + 1
+    self.mouseWheelEnabled = value
+  end
   function frame:IsMouseWheelEnabled() return self.mouseWheelEnabled end
-  function frame:SetClipsChildren(value) self.clipsChildren = value end
+  function frame:SetClipsChildren(value)
+    self.clipChanges = (self.clipChanges or 0) + 1
+    self.clipsChildren = value
+  end
   function frame:GetClipsChildren() return self.clipsChildren end
   function frame:SetScript(name, callback) self.scripts[name] = callback end
   function frame:GetScript(name) return self.scripts[name] end
@@ -93,7 +100,11 @@ local core = {
   RegisterAddMessageHook = function() end,
   UnregisterAddMessageHooks = function() end,
   QueueChatLifecycleRefresh = function() end,
-  Defer = function(_, callback) deferred[#deferred + 1] = callback end,
+  DeferKeyed = function(_, key, callback, ...)
+    deferred[key] = { callback = callback, args = { ... } }
+    return true
+  end,
+  CancelDeferred = function(_, key) deferred[key] = nil end,
   On = function(_, event, callback, owner) listeners[#listeners + 1] = { event, callback, owner } end,
   OffOwner = function(_, owner)
     for index = #listeners, 1, -1 do
@@ -141,8 +152,10 @@ core:OffOwner(controls)
 assert(chatFrame.scripts.OnMouseWheel == ownedHandler)
 assert(chatFrame.mouseWheelEnabled and chatFrame.clipsChildren)
 inCombat = false
-for index = 1, #deferred do deferred[index]() end
-deferred = {}
+for key, job in pairs(deferred) do
+  deferred[key] = nil
+  job.callback(unpackValues(job.args))
+end
 assert(chatFrame.scripts.OnMouseWheel == originalWheel)
 assert(chatFrame.mouseWheelEnabled == false and chatFrame.clipsChildren == false)
 assert(chatFrame.__rothSmoothScroll == scrollDriver)
@@ -154,12 +167,53 @@ controls:OnEnable(core)
 assert(chatFrame.scripts.OnMouseWheel == ownedHandler)
 assert(chatFrame.__rothSmoothScroll == scrollDriver)
 assert(_G.CreateFrameCalls == frameCountAfterEnable)
+
+-- Repeated combat toggles retain at most the latest activation continuation.
+inCombat = true
+for cycle = 1, 5 do
+  active = false
+  controls:OnDisable(core)
+  assert(deferred[controls.__applyDeferredKey] == nil)
+  assert(deferred[controls.__refreshDeferredKey] == nil)
+  assert(deferred[controls.__restoreDeferredKey])
+  active = true
+  controls:OnEnable(core)
+  assert(deferred[controls.__restoreDeferredKey] == nil)
+  assert(deferred[controls.__applyDeferredKey])
+  if cycle < 5 then
+    for index = #listeners, 1, -1 do
+      local listener = listeners[index]
+      if listener[1] == "CHAT_LAYOUT_CHANGED" then
+        listener[2](nil, core)
+        break
+      end
+    end
+    assert(deferred[controls.__refreshDeferredKey])
+  end
+  local queuedCount = 0
+  for _ in pairs(deferred) do queuedCount = queuedCount + 1 end
+  assert(queuedCount <= 2)
+end
+inCombat = false
+local latestApply = deferred[controls.__applyDeferredKey]
+assert(latestApply)
+deferred[controls.__applyDeferredKey] = nil
+latestApply.callback(unpackValues(latestApply.args))
+assert(chatFrame.scripts.OnMouseWheel == ownedHandler)
+assert(chatFrame.__rothSmoothScroll == scrollDriver)
+assert(_G.CreateFrameCalls == frameCountAfterEnable)
+
 local foreignWheelCalls = 0
 local function foreignWheel() foreignWheelCalls = foreignWheelCalls + 1 end
 chatFrame:SetScript("OnMouseWheel", foreignWheel)
+chatFrame.mouseWheelEnabled = false
+chatFrame.clipsChildren = false
+local wheelChanges, clipChanges = chatFrame.mouseWheelChanges, chatFrame.clipChanges
 active = false
 controls:OnDisable(core)
 assert(chatFrame.scripts.OnMouseWheel == foreignWheel)
 assert(chatFrame.mouseWheelEnabled == false and chatFrame.clipsChildren == false)
+assert(chatFrame.mouseWheelChanges == wheelChanges and chatFrame.clipChanges == clipChanges,
+  "disable must not overwrite another owner's wheel or clipping state")
 
 print("controls_ownership_spec: ok")

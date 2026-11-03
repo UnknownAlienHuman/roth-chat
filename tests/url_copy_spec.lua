@@ -12,6 +12,7 @@ local restrictionListener
 local accessible = true
 local restricted = false
 local inaccessibleLinkData = nil
+local inaccessibleValue = nil
 
 _G.RothChat = {
   RegisterModule = function(_, module)
@@ -37,7 +38,7 @@ _G.LinkUtil = {
 
 local NS = {
   IsChatMessagingRestricted = function() return restricted end,
-  CanAccessValue = function(value) return accessible and value ~= inaccessibleLinkData end,
+  CanAccessValue = function(value) return value == nil or (accessible and value ~= inaccessibleValue) end,
   CanAccessObject = function(value) return accessible and value ~= inaccessibleLinkData end,
   ApplyGlassLook = function() end,
 }
@@ -137,6 +138,15 @@ local popup = {
 _G.RothChat_UrlCopyPopup = popup
 capturedHandler(nil, nil, { options = "https://example.com" })
 assert(popup.shown and popup.editBox.text == "https://example.com")
+
+-- An accessible link-data table does not make each field ordinary.
+popup:Hide()
+local inaccessibleUrl = {}
+inaccessibleValue = inaccessibleUrl
+capturedHandler(nil, nil, { options = inaccessibleUrl })
+assert(not popup.shown and popup.editBox.text == "https://example.com",
+  "inaccessible URL options must not enter the popup")
+inaccessibleValue = nil
 
 restricted = true
 handled = capturedHandler(nil, nil, { options = "https://example.com" })

@@ -13,6 +13,7 @@ local M = {
 }
 
 local listenersRegistered = false
+local ownedFlashes = setmetatable({}, { __mode = "k" })
 
 local function IsEnabled(core)
   return M.active and core and core:IsModuleActive("Alerts")
@@ -23,40 +24,60 @@ local function CanFlashChatTab()
 end
 
 local function GetChatTab(frame)
-  local name = frame and frame.GetName and frame:GetName()
-  if type(name) ~= "string" then return nil end
-  return _G[name .. "Tab"]
-end
+  if not NS.CanAccessObject(frame) then return nil end
+  local getName = frame.GetName
+  if not NS.CanAccessValue(getName) or type(getName) ~= "function" then return nil end
+  local ok, name = pcall(getName, frame)
+  if not ok or not NS.CanAccessValue(name) or type(name) ~= "string" then return nil end
 
-local function GetSelectedDockFrame()
-  if NS.GetSelectedDockChatFrame then
-    local selected = NS.GetSelectedDockChatFrame()
-    if selected then return selected end
-  end
-  return _G.SELECTED_CHAT_FRAME
+  local tab = _G[name .. "Tab"]
+  return NS.CanAccessObject(tab) and tab or nil
 end
 
 local function IsInactiveDockTab(frame)
-  if not frame or frame.__rothRestoring then return false end
-  if NS.IsActiveChatFrame and not NS.IsActiveChatFrame(frame) then return false end
-  if not (NS.IsDockedChatFrame and NS.IsDockedChatFrame(frame)) then return false end
-  local selected = GetSelectedDockFrame()
+  if not NS.CanAccessObject(frame) then return false end
+  local restoring = frame.__rothRestoring
+  if not NS.CanAccessValue(restoring) or restoring then return false end
+  if not NS.IsActiveChatFrame(frame) or not NS.IsDockedChatFrame(frame) then return false end
+
+  local selected = NS.GetSelectedDockChatFrame()
   return selected ~= nil and selected ~= frame
 end
 
 local function StartInactiveTabFlash(frame)
   if not CanFlashChatTab() or not IsInactiveDockTab(frame) then return end
   local tab = GetChatTab(frame)
-  if not tab or tab.alerting then return end
-  pcall(_G.FCF_StartAlertFlash, frame)
+  if not tab then return end
+
+  local alerting = tab.alerting
+  if not NS.CanAccessValue(alerting) or alerting then return end
+  local ok = pcall(_G.FCF_StartAlertFlash, frame)
+  if not ok then return end
+
+  if not NS.CanAccessObject(tab) then return end
+  alerting = tab.alerting
+  if NS.CanAccessValue(alerting) and alerting == true then
+    ownedFlashes[frame] = true
+  end
 end
 
 local function StopTabFlash(frame, selectedOnly)
-  if not CanFlashChatTab() or not frame then return end
+  if not NS.CanAccessObject(frame) then return end
+  if not ownedFlashes[frame] then return end
+  if not CanFlashChatTab() then
+    ownedFlashes[frame] = nil
+    return
+  end
+
+  if selectedOnly and NS.GetSelectedDockChatFrame() ~= frame then return end
   local tab = GetChatTab(frame)
-  if not tab or not tab.alerting then return end
-  if selectedOnly and GetSelectedDockFrame() ~= frame then return end
-  pcall(_G.FCF_StopAlertFlash, frame)
+  if tab then
+    local alerting = tab.alerting
+    if NS.CanAccessValue(alerting) and alerting == true then
+      pcall(_G.FCF_StopAlertFlash, frame)
+    end
+  end
+  ownedFlashes[frame] = nil
 end
 
 local function RefreshDockFlashes()
@@ -67,16 +88,16 @@ local function RefreshDockFlashes()
 end
 
 local function StopAllFlashes()
-  if not CanFlashChatTab() then return end
-  for _, chatFrame in ipairs(NS.GetChatFrames()) do
-    StopTabFlash(chatFrame, false)
+  for chatFrame in pairs(ownedFlashes) do
+    if NS.CanAccessObject(chatFrame) then StopTabFlash(chatFrame, false) end
   end
+  ownedFlashes = setmetatable({}, { __mode = "k" })
 end
 
 local function OnAddMessage(frame, text)
   if not IsEnabled(M.core) then return end
-  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then return end
-  if NS.CanAccessValue and not NS.CanAccessValue(text) then return end
+  if NS.IsChatMessagingRestricted() then return end
+  if not NS.CanAccessValue(text) then return end
   if type(text) ~= "string" then return end
   if text == "" then return end
   StartInactiveTabFlash(frame)
@@ -116,7 +137,7 @@ end
 function M:OnDisable(core)
   self.active = false
   listenersRegistered = false
-  if core and core.UnregisterAddMessageHooks then core:UnregisterAddMessageHooks(self) end
+  core:UnregisterAddMessageHooks(self)
   StopAllFlashes()
 end
 

@@ -1,4 +1,5 @@
 -- Dock geometry ownership contract.
+local unpackValues = unpack or table.unpack
 
 local registeredModule
 local runtimeActive = true
@@ -36,6 +37,9 @@ dock.scrollFrame = scrollFrame
 _G.GeneralDockManager = dock
 
 local NS = {
+  CanAccessObject = function(object) return object ~= nil end,
+  CanAccessAllValues = function() return true end,
+  SafeNumber = function(value, fallback) return type(value) == "number" and value or fallback end,
   RunNextFrame = function(_, callback) callback() end,
   CancelScheduled = function() end,
 }
@@ -72,7 +76,7 @@ assert(deferred[module.__dockDeferredApplyKey])
 inCombat = false
 local pendingApply = deferred[module.__dockDeferredApplyKey]
 deferred[module.__dockDeferredApplyKey] = nil
-pendingApply.callback(table.unpack(pendingApply.args))
+pendingApply.callback(unpackValues(pendingApply.args))
 
 module:OnEnable(core)
 assert(dock.height == 20)

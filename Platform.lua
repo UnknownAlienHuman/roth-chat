@@ -65,15 +65,19 @@ function NS.ReportError(label)
   return true
 end
 
--- pcall forwards arguments under Lua 5.1 as well as WoW's Lua runtime.
-function NS.SafeCall(label, callback, ...)
-  if type(callback) ~= "function" then return true end
-  local results = NS.Pack(pcall(callback, ...))
-  if not results[1] then
+local function CallResult(label, ok, ...)
+  if not ok then
     NS.ReportError(label)
     return false, "callback failed"
   end
-  return true, NS.Unpack(results, 2)
+  return true, ...
+end
+
+-- Forward exact result arity on the stack; message consumers do not need an
+-- allocated result table, and raw exceptions never enter retained state.
+function NS.SafeCall(label, callback, ...)
+  if type(callback) ~= "function" then return true end
+  return CallResult(label, pcall(callback, ...))
 end
 
 function NS.GetChatFrameIndex(frame)

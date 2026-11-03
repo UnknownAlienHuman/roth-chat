@@ -181,10 +181,6 @@ local TEXT_SIZE_PRESETS = {
 }
 RothChat.TEXT_SIZE_PRESETS = TEXT_SIZE_PRESETS
 
-local function InferStylePreset(profile)
-  return "minimal"
-end
-
 local function InferFontPreset(profile)
   local font = type(profile.styleFont) == "string" and profile.styleFont:upper() or ""
   if font:find("ARHEI", 1, true) then
@@ -294,9 +290,8 @@ local function InitDB()
   if type(RothChatDB) ~= "table" then RothChatDB = {} end
   if type(RothChatDB.profile) ~= "table" then RothChatDB.profile = {} end
   local profile = RothChatDB.profile
-  local hadStylePreset, hadFontPreset, hadTextSizePreset = profile.stylePreset ~= nil, profile.fontPreset ~= nil, profile.textSizePreset ~= nil
+  local hadFontPreset, hadTextSizePreset = profile.fontPreset ~= nil, profile.textSizePreset ~= nil
   for key in pairs(DEFAULTS.profile) do profile[key] = NormalizeValue(key, profile[key]) end
-  if not hadStylePreset then profile.stylePreset = InferStylePreset(profile) end
   if not hadFontPreset then profile.fontPreset = InferFontPreset(profile) end
   if not hadTextSizePreset then profile.textSizePreset = InferTextSizePreset(profile) end
   profile.__version = RothChat.version
@@ -323,14 +318,15 @@ function RothChat:Set(key, value)
 end
 
 function RothChat:Debug(...)
-  if not self:Get("debug") then return end
-  local msg = NS.SafeConcat(...)
-  DEFAULT_CHAT_FRAME:AddMessage("|cff70d0ffRothChat|r " .. msg)
+  if self:Get("debug") then return self:Print(...) end
 end
 
 function RothChat:Print(...)
-  local msg = NS.SafeConcat(...)
-  DEFAULT_CHAT_FRAME:AddMessage("|cff70d0ffRothChat|r " .. msg)
+  local frame = _G.DEFAULT_CHAT_FRAME
+  if NS.IsChatMessagingRestricted() or not NS.CanAccessObject(frame)
+    or type(frame.AddMessage) ~= "function" then return false end
+  frame:AddMessage("|cff70d0ffRothChat|r " .. NS.SafeConcat(...))
+  return true
 end
 
 -- -----------------------------------------------------------------------------
@@ -350,13 +346,10 @@ function RothChat:RegisterModule(module)
   self.moduleOrder[#self.moduleOrder + 1] = module.name
   self.moduleState[module.name] = {
     defaultEnabled = defaultEnabled,
-    enabled = defaultEnabled, -- compatibility field; configured state lives in the profile
     loaded = false,
     initOK = false,
     active = false,
     loginCalled = false,
-    ok = false,
-    err = nil,
   }
 end
 
@@ -391,14 +384,7 @@ local function SafeModuleCall(self, name, method, ...)
   if not m then return false end
   if type(m[method]) ~= "function" then return true end
 
-  local ok, res = NS.SafeCall("RothChat:" .. name .. ":" .. method, m[method], m, self, ...)
-  if not ok then
-    local st = self.moduleState[name]
-    if st then
-      st.err = res
-    end
-  end
-  return ok, res
+  return NS.SafeCall("RothChat:" .. name .. ":" .. method, m[method], m, self, ...)
 end
 
 local function CleanupModuleRegistrations(self, module)
@@ -421,7 +407,6 @@ local function NotifyModuleLogin(self, name)
     return true
   end
 
-  st.ok = false
   st.active = false
   SafeModuleCall(self, name, "OnDisable")
   CleanupModuleRegistrations(self, module)
@@ -439,7 +424,6 @@ function RothChat:EnableModule(name)
     local ok = SafeModuleCall(self, name, "Init")
     st.loaded = true
     st.initOK = ok and true or false
-    st.ok = st.initOK
     if not st.initOK then
       SafeModuleCall(self, name, "OnDisable")
       CleanupModuleRegistrations(self, module)
@@ -452,12 +436,8 @@ function RothChat:EnableModule(name)
   -- Owner-aware registrations are rebuilt for every activation. This prevents
   -- stale callbacks from surviving an incomplete module-specific OnDisable.
   CleanupModuleRegistrations(self, module)
-  st.err = nil
-  st.ok = true
-
   local ok = SafeModuleCall(self, name, "OnEnable")
   if not ok then
-    st.ok = false
     st.active = false
     SafeModuleCall(self, name, "OnDisable")
     CleanupModuleRegistrations(self, module)
@@ -527,10 +507,6 @@ function RothChat:DeferKeyed(key, callback, ...)
   self._deferred[#self._deferred + 1] = job
   self._deferredCount = self._deferredCount + 1
   return true
-end
-
-function RothChat:Defer(callback, ...)
-  return self:DeferKeyed(callback, callback, ...)
 end
 
 function RothChat:CancelDeferred(key)
@@ -635,7 +611,7 @@ RothChat:RegisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
 -- Slash command
 SLASH_ROTHCHAT1 = "/rothchat"
 SlashCmdList["ROTHCHAT"] = function(msg)
-  if NS.IsSettingsOpenRestricted and NS.IsSettingsOpenRestricted() then
+  if NS.IsSettingsOpenRestricted() then
     RothChat:Print("Settings are unavailable while combat or chat restrictions are active.")
     return
   end

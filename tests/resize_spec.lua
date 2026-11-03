@@ -1,4 +1,5 @@
 -- Temporary resize ownership contract.
+local unpackValues = unpack or table.unpack
 
 local registeredModule
 local runtimeActive = true
@@ -82,6 +83,9 @@ function frame:StopMovingOrSizing() self.resizing = false end
 function frame:ScrollToBottom() end
 
 local NS = {
+  CanAccessObject = function(object) return object ~= nil end,
+  CanAccessValue = function() return true end,
+  SafeNumber = function(value, fallback) return type(value) == "number" and value or fallback end,
   GetChatFrameIndex = function(candidate) return candidate == frame and 1 or nil end,
   IsActiveChatFrame = function(candidate) return candidate == frame and frame.active end,
   GetActiveChatFrames = function() return frame.active and { frame } or {} end,
@@ -166,7 +170,7 @@ assert(deferred[module.__applyDeferredKey])
 inCombat = false
 local pendingApply = deferred[module.__applyDeferredKey]
 deferred[module.__applyDeferredKey] = nil
-pendingApply.callback(table.unpack(pendingApply.args))
+pendingApply.callback(unpackValues(pendingApply.args))
 assert(frame.width == 500 and frame.height == 250, "stale teardown must not resize after re-enable")
 assert(createdGrip.shown)
 

@@ -22,6 +22,17 @@ All notable Roth Chat changes are recorded here.
 - Pinned current UI source and engineering references are recorded in `docs/VALIDATION.md`.
 - Live-client validation is **NOT RUN**. The target build and source reference do not constitute a runtime pass.
 
+### Follow-up review — 2026-11-03
+
+- Cancel stale combat continuations in Controls, Restore, and CopyOverlay; preserve later wheel/clipping and Cleaner format changes made by other owners.
+- Track only addon-started tab flashes so disabling Alerts preserves pre-existing native alerts.
+- Invalidate Restore identity immediately after native subscription changes and window renames. Reject inaccessible identity data and suspend history access for unknown newer database schemas without altering their contents.
+- Skip replay when the native message count cannot be established, preserving already populated chat windows.
+- Replace Ticker's advancing queue indices with a fixed 100-slot ring and cap preview messages at 1,024 UTF-8 characters before the truncation marker.
+- Refresh dependent Blizzard Settings controls after applying appearance, font, or size presets.
+- Remove unused module status fields, listener aliases, the anonymous combat-defer entry point, and duplicate fallbacks for required shared helpers. Keep callback results on the stack and compact callback registries only after removal.
+- Preserve cancellation and replacement of fade completions during the same update; gate URL options and temporary copy policy before evaluation.
+
 ## Historical audit — 2026-08-29
 
 The selectively reused work below is incorporated and revised in 1.2.0. Its schema-v2 and validation notes describe the earlier audit snapshot.

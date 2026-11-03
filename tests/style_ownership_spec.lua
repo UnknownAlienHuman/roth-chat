@@ -235,6 +235,7 @@ local NS = {
     if owner.__scrollIcon then owner.__scrollIcon:Hide() end
     for _, texture in ipairs(owner.__rothHighlight or {}) do texture:Hide() end
   end,
+  BORDER_TEXTURE = "roth-border",
   BORDER_HL_TEXTURE = "roth-highlight",
   SCROLL_BTN_TEXTURE = "roth-scroll",
   SCROLL_ICONS = { TO_BOTTOM = { 0, 1, 0, 1 } },

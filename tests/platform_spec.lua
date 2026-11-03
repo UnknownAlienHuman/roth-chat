@@ -51,4 +51,11 @@ assert(NS.CollectChatText(env.frame, 100) == "")
 env.restricted = true
 env.frame.GetNumMessages = function() error("locked buffer must not be read") end
 assert(NS.CollectChatText(env.frame, 100) == "")
+local printed = #env.reports
+assert(env.core:Print("blocked") == false and #env.reports == printed)
+env.restricted = false
+env.frame.forbidden = true
+assert(env.core:Print("blocked") == false and #env.reports == printed)
+env.frame.forbidden = false
+assert(env.core:Print("available") == true and #env.reports == printed + 1)
 print("platform_spec: ok")

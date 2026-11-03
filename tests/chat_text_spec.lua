@@ -3,10 +3,11 @@
 local accessible = true
 local restricted = false
 local nativeFormat = "[%H:%M] "
+local inaccessibleValue
 local NS = {
   IsChatMessagingRestricted = function() return restricted end,
-  CanAccessValue = function()
-    return accessible
+  CanAccessValue = function(value)
+    return value == nil or (accessible and value ~= inaccessibleValue)
   end,
   SafeToString = function(value)
     return value == nil and "" or tostring(value)
@@ -94,5 +95,8 @@ assert(NS.NormalizeCopyText("restricted chat", true) == "")
 assert(NS.StripDisplayTimestampPrefix("[12:34] restricted chat", 12345, true) == "")
 assert(NS.FormatChatTimestamp(12345, false) == "")
 restricted = false
+inaccessibleValue = false
+assert(NS.NormalizeCopyText("ordinary", inaccessibleValue) == "",
+  "timestamp policy values must be gated before use")
 
 print("chat_text_spec: ok")

@@ -15,7 +15,6 @@ local CLEANER_MODULES = { "Cleaner" }
 local CONTROLS_MODULES = { "Controls" }
 local RESTORE_MODULES = { "Restore" }
 local COPY_MODULES = { "CopyOverlay" }
-local pendingModuleChanges = {}
 
 local BUILTIN_MEDIA = {
   font = {
@@ -76,6 +75,13 @@ local function RefreshModules(moduleNames)
   end
 end
 
+local function NotifySettings(variables)
+  if type(Settings.NotifyUpdate) ~= "function" then return end
+  for _, variable in ipairs(variables or {}) do
+    Settings.NotifyUpdate(variable)
+  end
+end
+
 local function SetProfileValue(key, value)
   if RothChat:Get(key) == value then
     return false
@@ -102,29 +108,14 @@ local function ApplyModuleToggle(key, value)
   end
 
   if type(InCombatLockdown) == "function" and InCombatLockdown() then
-    if pendingModuleChanges[name] then return end
-    pendingModuleChanges[name] = true
-    if type(RothChat.DeferKeyed) == "function" then
-      RothChat:DeferKeyed("options:module:" .. name, function()
-        pendingModuleChanges[name] = nil
-        if RothChat:Get("enabled") == false then return end
-        if RothChat:IsModuleEnabled(name) then
-          RothChat:EnableModule(name)
-        else
-          RothChat:DisableModule(name)
-        end
-      end)
-    else
-      RothChat:Defer(function()
-        pendingModuleChanges[name] = nil
-        if RothChat:Get("enabled") == false then return end
-        if RothChat:IsModuleEnabled(name) then
-          RothChat:EnableModule(name)
-        else
-          RothChat:DisableModule(name)
-        end
-      end)
-    end
+    RothChat:DeferKeyed("options:module:" .. name, function()
+      if RothChat:Get("enabled") == false then return end
+      if RothChat:IsModuleEnabled(name) then
+        RothChat:EnableModule(name)
+      else
+        RothChat:DisableModule(name)
+      end
+    end)
     return
   end
 
@@ -137,6 +128,7 @@ local function ApplyModuleToggle(key, value)
 end
 
 local function ClampSliderValue(value, minimum, maximum, step)
+  if not NS.CanAccessValue(value) then return minimum end
   value = tonumber(value)
   if not value then return minimum end
   value = math.max(minimum, math.min(maximum, value))
@@ -148,6 +140,7 @@ local function ClampSliderValue(value, minimum, maximum, step)
 end
 
 local function IsDropdownValueAllowed(optionsFunc, value)
+  if not NS.CanAccessValue(value) then return false end
   if type(value) ~= "string" or type(optionsFunc) ~= "function" then return false end
   local options = optionsFunc()
   if type(options) ~= "table" then return false end
@@ -158,6 +151,7 @@ local function IsDropdownValueAllowed(optionsFunc, value)
 end
 
 local function NormalizeRGBHex(value, fallback)
+  if not NS.CanAccessValue(value) then return fallback or "FFFFFF" end
   local source = type(value) == "string" and value or fallback or "FFFFFF"
   source = source:gsub("^#", ""):gsub("^|c%x%x", ""):upper()
   if #source >= 8 then
@@ -392,7 +386,7 @@ local function MakePresetOptions(presets)
   end
 end
 
-local function AddPresetDropdown(category, variable, label, tooltip, key, presets, applyMethod, moduleNames)
+local function AddPresetDropdown(category, variable, label, tooltip, key, presets, applyMethod, moduleNames, changedVariables)
   if type(presets) ~= "table" or type(applyMethod) ~= "string" then return end
   local options = MakePresetOptions(presets)
   local setting = RegisterProxySetting(
@@ -409,6 +403,7 @@ local function AddPresetDropdown(category, variable, label, tooltip, key, preset
       local apply = RothChat[applyMethod]
       if type(apply) ~= "function" then return end
       apply(RothChat, value)
+      NotifySettings(changedVariables)
       RefreshModules(moduleNames)
     end
   )
@@ -600,7 +595,8 @@ local function BuildSettingsCategory()
     "fontPreset",
     RothChat.FONT_PRESETS,
     "ApplyFontPreset",
-    FONT_MODULES
+    FONT_MODULES,
+    { "ROTHCHAT_STYLE_FONT", "ROTHCHAT_STYLE_SHADOW" }
   )
   AddPresetDropdown(
     typography,
@@ -610,7 +606,8 @@ local function BuildSettingsCategory()
     "textSizePreset",
     RothChat.TEXT_SIZE_PRESETS,
     "ApplyTextSizePreset",
-    FONT_MODULES
+    FONT_MODULES,
+    { "ROTHCHAT_STYLE_FONT_SIZE" }
   )
   AddDropdown(
     typography,
@@ -670,7 +667,15 @@ local function BuildSettingsCategory()
     "stylePreset",
     RothChat.STYLE_PRESETS,
     "ApplyStylePreset",
-    STYLE_MODULES
+    STYLE_MODULES,
+    {
+      "ROTHCHAT_STYLE_BACKGROUND",
+      "ROTHCHAT_STYLE_BACKGROUND_ALPHA",
+      "ROTHCHAT_STYLE_BACKGROUND_COLOR",
+      "ROTHCHAT_STYLE_BORDER",
+      "ROTHCHAT_STYLE_BORDER_COLOR",
+      "ROTHCHAT_TIMESTAMP_COLOR",
+    }
   )
   AddCheckbox(
     background,

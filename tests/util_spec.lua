@@ -36,6 +36,40 @@ env:Advance(1)
 assert(rawequal(env.frame.alpha, env.inaccessible), "opaque alpha must not be read or replaced")
 env.frame.alpha = 1
 
+-- A completion queued in the same update remains cancellable by another one.
+local fadeA, fadeB, completions = CreateFrame("Frame"), CreateFrame("Frame"), 0
+fadeA.alpha, fadeB.alpha = 0, 0
+NS.FadeTo(fadeA, 1, 1, function()
+  completions = completions + 1
+  NS.StopFading(fadeB)
+end)
+NS.FadeTo(fadeB, 1, 1, function()
+  completions = completions + 1
+  NS.StopFading(fadeA)
+end)
+env:Advance(1)
+assert(completions == 1, "cancelled completion must not run from an earlier snapshot")
+NS.StopFading(env.inaccessible, 0)
+NS.StopFading(env.frame, env.inaccessible)
+assert(env.frame.alpha == 1, "denied alpha must not replace current presentation")
+
+-- SetAlpha post-hooks may synchronously replace the just-completed fade.
+local reverse = CreateFrame("Frame")
+reverse.alpha = 0
+local setAlpha, reversed = reverse.SetAlpha, false
+function reverse:SetAlpha(alpha)
+  setAlpha(self, alpha)
+  if alpha == 1 and not reversed then
+    reversed = true
+    NS.FadeTo(self, 0, 1)
+  end
+end
+NS.FadeTo(reverse, 1, 1)
+env:Advance(1)
+assert(reversed and reverse.alpha == 1)
+env:Advance(1)
+assert(reverse.alpha == 0, "completion cleanup must preserve the replacement fade")
+
 -- Combat jobs retain one current request per key and preserve nil arity.
 local applied
 for index = 1, 1000 do

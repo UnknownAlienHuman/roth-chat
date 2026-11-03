@@ -52,9 +52,7 @@ local function RemoveSenderBrackets(formatString)
 
   -- Preserve Blizzard's localized channel labels, colors and hyperlinks. Only
   -- remove literal square brackets that directly wrap the sender placeholder.
-  local cleaned = formatString:gsub("%[%%s%]", "%%s")
-  cleaned = cleaned:gsub("%[%s*%%s%s*%]", "%%s")
-  return cleaned
+  return formatString:gsub("%[%s*%%s%s*%]", "%%s")
 end
 
 local function BuildFormatMap(baseFormats, shorten)
@@ -78,36 +76,51 @@ function M:Init(core)
 end
 
 function M:ApplyFormats()
-  if not self.appliedFormats then return end
+  if not self.prevFormats or not self.ownedFormats then return end
+  local desiredFormats = BuildFormatMap(self.prevFormats, self.core:Get("cleanerShorten"))
   for _, key in ipairs(FORMAT_KEYS) do
-    local value = self.appliedFormats[key]
-    if value ~= nil then _G[key] = value end
+    local desired = desiredFormats[key]
+    local current = _G[key]
+    local owned = self.ownedFormats[key]
+
+    if owned then
+      if current == owned.applied then
+        if current ~= desired then
+          _G[key] = desired
+          owned.applied = desired
+        end
+      else
+        -- Another owner changed this format. Leave it alone for this enable cycle.
+        self.ownedFormats[key] = nil
+      end
+    elseif current == self.prevFormats[key] and current ~= desired then
+      _G[key] = desired
+      self.ownedFormats[key] = { applied = desired }
+    end
   end
 end
 
 function M:OnEnable(core)
   self.prevFormats = SnapshotFormats()
-  self.appliedFormats = BuildFormatMap(self.prevFormats, core:Get("cleanerShorten"))
+  self.ownedFormats = {}
   self:ApplyFormats()
 end
 
 function M:OnDisable(core)
-  if self.prevFormats and self.appliedFormats then
+  if self.prevFormats and self.ownedFormats then
     for _, key in ipairs(FORMAT_KEYS) do
-      local previous = self.prevFormats[key]
-      local applied = self.appliedFormats[key]
+      local owned = self.ownedFormats[key]
       -- Do not overwrite a later change made by Blizzard or another addon.
-      if applied ~= nil and _G[key] == applied then _G[key] = previous end
+      if owned and _G[key] == owned.applied then _G[key] = self.prevFormats[key] end
     end
   end
 
   self.prevFormats = nil
-  self.appliedFormats = nil
+  self.ownedFormats = nil
 end
 
 function M:Refresh(core)
   if not core:IsModuleActive("Cleaner") or not self.prevFormats then return end
-  self.appliedFormats = BuildFormatMap(self.prevFormats, core:Get("cleanerShorten"))
   self:ApplyFormats()
 end
 

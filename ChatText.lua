@@ -11,14 +11,29 @@ local DEFAULT_TIMESTAMP_COLOR = "999999"
 local DEFAULT_TIMESTAMP_FORMAT = "%H:%M"
 local CENSORED_PLACEHOLDER = "[Censored message unavailable after reload]"
 local LITERAL_PIPE_SENTINEL = "\001"
+local SESSION_LINK_TYPES = {
+  "BNplayer",
+  "BNplayerCommunity",
+  "playerCommunity",
+  "discorduser",
+  "discorduserCommunity",
+  "playerGM",
+  "channel",
+}
+local PLAIN_TIMESTAMP_PATTERNS = {
+  "^%[%d%d?:%d%d:%d%d%s+[AaPp][Mm]%]%s*",
+  "^%[%d%d?:%d%d%s+[AaPp][Mm]%]%s*",
+  "^%[%d%d:%d%d:%d%d%]%s*",
+  "^%[%d%d:%d%d%]%s*",
+}
 
 local function CanUse(value)
   -- Chat text is unavailable to addon-owned processing during messaging
   -- lockdown, even when a particular value happens to be accessible.
-  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then
+  if NS.IsChatMessagingRestricted() then
     return false
   end
-  return not NS.CanAccessValue or NS.CanAccessValue(value)
+  return NS.CanAccessValue(value)
 end
 
 local function Trim(text)
@@ -45,10 +60,10 @@ local function SafeStripHyperlinks(text)
 end
 
 function NS.NormalizeHexColor(value, fallback)
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then
+  if not NS.CanAccessValue(value) then
     value = nil
   end
-  if NS.CanAccessValue and not NS.CanAccessValue(fallback) then
+  if not NS.CanAccessValue(fallback) then
     fallback = nil
   end
   fallback = type(fallback) == "string" and fallback:upper() or DEFAULT_TIMESTAMP_COLOR
@@ -132,7 +147,7 @@ end
 
 function NS.StripRothTimestampPrefix(text)
   if not CanUse(text) then return "" end
-  if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
+  if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return "" end
 
   local stripped, count = text:gsub("^|[cC][fF][fF]%x%x%x%x%x%x%[%d%d:%d%d:%d%d%]|[rR]%s*", "", 1)
@@ -156,15 +171,8 @@ local function StripExactPrefix(text, prefix)
 end
 
 local function StripCommonPlainTimestampPrefix(text)
-  local patterns = {
-    "^%[%d%d?:%d%d:%d%d%s+[AaPp][Mm]%]%s*",
-    "^%[%d%d?:%d%d%s+[AaPp][Mm]%]%s*",
-    "^%[%d%d:%d%d:%d%d%]%s*",
-    "^%[%d%d:%d%d%]%s*",
-  }
-
-  for i = 1, #patterns do
-    local stripped, count = text:gsub(patterns[i], "", 1)
+  for i = 1, #PLAIN_TIMESTAMP_PATTERNS do
+    local stripped, count = text:gsub(PLAIN_TIMESTAMP_PATTERNS[i], "", 1)
     if count > 0 then return stripped end
   end
   return text
@@ -176,7 +184,7 @@ end
 function NS.StripDisplayTimestampPrefix(text, timestamp, allowGeneric)
   if not CanUse(text) then return "" end
   if not CanUse(timestamp) or not CanUse(allowGeneric) then return "" end
-  if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
+  if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return "" end
 
   local stripped = NS.StripRothTimestampPrefix(text)
@@ -198,18 +206,8 @@ function NS.StripDisplayTimestampPrefix(text, timestamp, allowGeneric)
 end
 
 local function FlattenSessionLinks(text)
-  local flattenTypes = {
-    "BNplayer",
-    "BNplayerCommunity",
-    "playerCommunity",
-    "discorduser",
-    "discorduserCommunity",
-    "playerGM",
-    "channel",
-  }
-
-  for i = 1, #flattenTypes do
-    local linkType = flattenTypes[i]
+  for i = 1, #SESSION_LINK_TYPES do
+    local linkType = SESSION_LINK_TYPES[i]
     text = text:gsub("|H" .. linkType .. ":[^|]*|h(.-)|h", "%1")
   end
 
@@ -221,7 +219,7 @@ end
 
 function NS.SanitizeDurableChatText(text)
   if not CanUse(text) then return "" end
-  if type(text) ~= "string" then text = NS.SafeToString and NS.SafeToString(text) or "" end
+  if type(text) ~= "string" then text = NS.SafeToString(text) end
   if text == "" then return "" end
 
   -- Account-name tokens and censored-message callbacks are session/context
@@ -245,7 +243,7 @@ local function StripPlainTimestampPrefixes(text)
 end
 
 function NS.NormalizeCopyText(text, includeTimestamps)
-  if not CanUse(text) then return "" end
+  if not CanUse(text) or not CanUse(includeTimestamps) then return "" end
   text = NS.SanitizeDurableChatText(text)
   if text == "" then return "" end
 

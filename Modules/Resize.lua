@@ -2,7 +2,7 @@
 -- Provides temporary resizing and returns each frame to the base geometry that
 -- existed before Roth Chat started the current resize session.
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 
 local M = {
@@ -23,29 +23,12 @@ local grips = setmetatable({}, { __mode = "k" })
 local state = setmetatable({}, { __mode = "k" })
 local resizeActive = false
 local lifecycleListenersRegistered = false
-M.__applyDeferredKey = M.__applyDeferredKey or {}
+M.__applyDeferredKey = {}
 
 local AnimateSize
 
 local function CanAccessFrame(frame)
-  return frame ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(frame))
-end
-
-local function DeferKeyed(core, key, callback, ...)
-  if type(core.DeferKeyed) == "function" then
-    core:DeferKeyed(key, callback, ...)
-  elseif type(core.Defer) == "function" then
-    core:Defer(callback, ...)
-  end
-end
-
-local function CancelDeferred(core, key)
-  if type(core.CancelDeferred) == "function" then core:CancelDeferred(key) end
-end
-
-local function SafeNumber(value)
-  if NS.SafeNumber then return NS.SafeNumber(value) end
-  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value or nil
+  return frame ~= nil and NS.CanAccessObject(frame)
 end
 
 local function IsEnabled(core)
@@ -60,7 +43,6 @@ local function GetState(frame)
       baseH = nil,
       timer = nil,
       anim = nil,
-      snapDeferred = false,
       ownsTemporarySize = false,
       snapKey = {},
       restoreKey = {},
@@ -73,11 +55,11 @@ local function GetState(frame)
 end
 
 local function IsMainChatFrame(frame)
-  return CanAccessFrame(frame) and NS.GetChatFrameIndex and NS.GetChatFrameIndex(frame) == MAIN_CHAT_INDEX
+  return CanAccessFrame(frame) and NS.GetChatFrameIndex(frame) == MAIN_CHAT_INDEX
 end
 
 local function IsActiveFrame(frame)
-  return CanAccessFrame(frame) and (not NS.IsActiveChatFrame or NS.IsActiveChatFrame(frame))
+  return CanAccessFrame(frame) and NS.IsActiveChatFrame(frame)
 end
 
 local function StopSnapTimer(core, frame)
@@ -90,9 +72,10 @@ local function StopSnapTimer(core, frame)
     current.anim:Cancel()
     current.anim = nil
   end
-  if core then CancelDeferred(core, current.snapKey) end
-  if core then CancelDeferred(core, current.stopKey) end
-  current.snapDeferred = false
+  if core then
+    core:CancelDeferred(current.snapKey)
+    core:CancelDeferred(current.stopKey)
+  end
 end
 
 local function CaptureBaseSize(frame, force)
@@ -101,7 +84,7 @@ local function CaptureBaseSize(frame, force)
   if current.ownsTemporarySize and not force then return end
 
   local width, height = frame:GetSize()
-  width, height = SafeNumber(width), SafeNumber(height)
+  width, height = NS.SafeNumber(width), NS.SafeNumber(height)
   if width and height and width > 0 and height > 0 then
     current.baseW = width
     current.baseH = height
@@ -113,8 +96,8 @@ local function ClampTargetSize(frame, width, height)
 
   if type(frame.GetResizeBounds) == "function" then
     local minWidth, minHeight, maxWidth, maxHeight = frame:GetResizeBounds()
-    minWidth, minHeight = SafeNumber(minWidth), SafeNumber(minHeight)
-    maxWidth, maxHeight = SafeNumber(maxWidth), SafeNumber(maxHeight)
+    minWidth, minHeight = NS.SafeNumber(minWidth), NS.SafeNumber(minHeight)
+    maxWidth, maxHeight = NS.SafeNumber(maxWidth), NS.SafeNumber(maxHeight)
     if minWidth and width < minWidth then width = minWidth end
     if minHeight and height < minHeight then height = minHeight end
     if maxWidth and maxWidth > 0 and width > maxWidth then width = maxWidth end
@@ -124,13 +107,13 @@ local function ClampTargetSize(frame, width, height)
 
   if frame.GetMinResize then
     local minWidth, minHeight = frame:GetMinResize()
-    minWidth, minHeight = SafeNumber(minWidth), SafeNumber(minHeight)
+    minWidth, minHeight = NS.SafeNumber(minWidth), NS.SafeNumber(minHeight)
     if minWidth and minWidth > 0 and width < minWidth then width = minWidth end
     if minHeight and minHeight > 0 and height < minHeight then height = minHeight end
   end
   if frame.GetMaxResize then
     local maxWidth, maxHeight = frame:GetMaxResize()
-    maxWidth, maxHeight = SafeNumber(maxWidth), SafeNumber(maxHeight)
+    maxWidth, maxHeight = NS.SafeNumber(maxWidth), NS.SafeNumber(maxHeight)
     if maxWidth and maxWidth > 0 and width > maxWidth then width = maxWidth end
     if maxHeight and maxHeight > 0 and height > maxHeight then height = maxHeight end
   end
@@ -156,11 +139,7 @@ end
 
 local function QueueSnapAfterCombat(core, frame)
   local current = GetState(frame)
-  if current.snapDeferred and type(core.DeferKeyed) ~= "function" then return end
-  current.snapDeferred = true
-
-  DeferKeyed(core, current.snapKey, function(targetFrame)
-    current.snapDeferred = false
+  core:DeferKeyed(current.snapKey, function(targetFrame)
     if not IsEnabled(core) or not IsActiveFrame(targetFrame) then return end
     if current.ownsTemporarySize and current.baseW and current.baseH then
       AnimateSize(core, targetFrame, current.baseW, current.baseH)
@@ -183,7 +162,7 @@ AnimateSize = function(core, frame, targetWidth, targetHeight)
   end
 
   local startWidth, startHeight = frame:GetSize()
-  startWidth, startHeight = SafeNumber(startWidth), SafeNumber(startHeight)
+  startWidth, startHeight = NS.SafeNumber(startWidth), NS.SafeNumber(startHeight)
   if not startWidth or not startHeight then return end
   targetWidth, targetHeight = ClampTargetSize(frame, targetWidth, targetHeight)
 
@@ -274,7 +253,7 @@ local function OnResizeStop(core, frame)
   end
   if InCombatLockdown() then
     local current = GetState(frame)
-    DeferKeyed(core, current.stopKey, function(targetFrame)
+    core:DeferKeyed(current.stopKey, function(targetFrame)
       if IsEnabled(core) then Stop(targetFrame) end
     end, frame)
   else
@@ -340,7 +319,7 @@ end
 local function HookMainTab(core, frame)
   if not IsMainChatFrame(frame) then return end
   local name = frame:GetName()
-  if type(name) ~= "string" or (NS.CanAccessValue and not NS.CanAccessValue(name)) then return end
+  if not NS.CanAccessValue(name) or type(name) ~= "string" then return end
   local tab = _G[name .. "Tab"]
   if not tab or tab.__rothResizeHooked then return end
   tab.__rothResizeHooked = true
@@ -351,7 +330,7 @@ local function HookMainTab(core, frame)
     local isLocked = false
     if FCF_GetChatWindowInfo then
       local _, _, _, _, _, _, _, locked = FCF_GetChatWindowInfo(frame:GetID())
-      if not NS.CanAccessValue or NS.CanAccessValue(locked) then isLocked = locked and true or false end
+      if NS.CanAccessValue(locked) then isLocked = locked and true or false end
     end
 
     if button == "LeftButton" and not IsModifierKeyDown() and isLocked then
@@ -367,7 +346,7 @@ end
 local function EnsureFrame(core, frame)
   if not IsActiveFrame(frame) or not frame.IsResizable then return end
   local resizable = frame:IsResizable()
-  if NS.CanAccessValue and not NS.CanAccessValue(resizable) then return end
+  if not NS.CanAccessValue(resizable) then return end
   if resizable ~= true then return end
   local current = GetState(frame)
   if not current.ownsTemporarySize and not frame.__rothResizing then CaptureBaseSize(frame, true) end
@@ -379,7 +358,7 @@ local function EnsureFrameSafely(core, frame)
   if not IsActiveFrame(frame) then return end
   if InCombatLockdown() then
     local current = GetState(frame)
-    DeferKeyed(core, current.ensureKey, function(targetFrame)
+    core:DeferKeyed(current.ensureKey, function(targetFrame)
       if IsEnabled(core) then EnsureFrame(core, targetFrame) end
     end, frame)
   else
@@ -400,7 +379,7 @@ local function RestoreOwnedSize(core, frame)
   end
 
   if InCombatLockdown() then
-    DeferKeyed(core, current.restoreKey, Restore, frame)
+    core:DeferKeyed(current.restoreKey, Restore, frame)
   else
     Restore(frame)
   end
@@ -418,7 +397,7 @@ local function CleanupDisabledFrame(core, frame)
     RestoreOwnedSize(core, targetFrame)
   end
   if InCombatLockdown() then
-    DeferKeyed(core, current.restoreKey, Cleanup, frame)
+    core:DeferKeyed(current.restoreKey, Cleanup, frame)
   else
     Cleanup(frame)
   end
@@ -435,7 +414,7 @@ local function RegisterLifecycleListeners(core)
   core:On("CHAT_LAYOUT_CHANGED", function(_, core2)
     if not IsEnabled(core2) then return end
     if InCombatLockdown() then
-      DeferKeyed(core2, M.__applyDeferredKey, function()
+      core2:DeferKeyed(M.__applyDeferredKey, function()
         if not IsEnabled(core2) then return end
         for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core2, chatFrame) end
       end)
@@ -448,8 +427,8 @@ local function RegisterLifecycleListeners(core)
     if not CanAccessFrame(chatFrame) then return end
     local current = state[chatFrame]
     if current then
-      CancelDeferred(core2, current.restoreKey)
-      CancelDeferred(core2, current.ensureKey)
+      core2:CancelDeferred(current.restoreKey)
+      core2:CancelDeferred(current.ensureKey)
     end
     StopSnapTimer(core2, chatFrame)
     chatFrame.__rothResizing = nil
@@ -469,10 +448,9 @@ function M:Init(core)
 end
 
 function M:OnEnable(core)
-  CancelDeferred(core, M.__applyDeferredKey)
+  core:CancelDeferred(M.__applyDeferredKey)
   for frame, current in pairs(state) do
-    CancelDeferred(core, current.restoreKey)
-    current.snapDeferred = false
+    core:CancelDeferred(current.restoreKey)
   end
   resizeActive = true
   lifecycleListenersRegistered = false
@@ -485,7 +463,7 @@ function M:OnEnable(core)
   end
 
   if InCombatLockdown() then
-    DeferKeyed(core, M.__applyDeferredKey, function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if IsEnabled(core) then ApplyAll() end
     end)
   else
@@ -496,7 +474,7 @@ end
 function M:OnDisable(core)
   resizeActive = false
   lifecycleListenersRegistered = false
-  CancelDeferred(core, M.__applyDeferredKey)
+  core:CancelDeferred(M.__applyDeferredKey)
 
   for frame, grip in pairs(grips) do
     if CanAccessFrame(frame) and core.UnregisterHoverFrame then core:UnregisterHoverFrame(frame, grip) end
@@ -505,8 +483,7 @@ function M:OnDisable(core)
 
   for frame, current in pairs(state) do
     StopSnapTimer(core, frame)
-    CancelDeferred(core, current.ensureKey)
-    current.snapDeferred = false
+    core:CancelDeferred(current.ensureKey)
     CleanupDisabledFrame(core, frame)
   end
 end
@@ -514,7 +491,7 @@ end
 function M:Refresh(core)
   if not IsEnabled(core) then return end
   if InCombatLockdown() then
-    DeferKeyed(core, M.__applyDeferredKey, function()
+    core:DeferKeyed(M.__applyDeferredKey, function()
       if not IsEnabled(core) then return end
       for _, frame in ipairs(NS.GetActiveChatFrames()) do EnsureFrameSafely(core, frame) end
     end)

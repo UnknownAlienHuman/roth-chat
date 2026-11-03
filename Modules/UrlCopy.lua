@@ -60,15 +60,13 @@ local function UrlCopyEnabled()
 end
 
 local function IsSafeChatString(value)
-  if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then return false end
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return false end
+  if NS.IsChatMessagingRestricted() then return false end
+  if not NS.CanAccessValue(value) then return false end
   return type(value) == "string"
 end
 
 local function IsAccessibleTable(value)
-  if NS.CanAccessObject then return NS.CanAccessObject(value) end
-  if NS.CanAccessValue and not NS.CanAccessValue(value) then return false end
-  return type(value) == "table"
+  return NS.CanAccessObject(value)
 end
 
 local function AllowLinkify()
@@ -301,13 +299,13 @@ local function RegisterLinkHandler()
 
   if _G.LinkUtil and type(_G.LinkUtil.RegisterLinkHandler) == "function" then
     _G.LinkUtil.RegisterLinkHandler(LINK_TYPE, function(link, text, linkData, contextData)
-      if NS.IsChatMessagingRestricted and NS.IsChatMessagingRestricted() then
+      if NS.IsChatMessagingRestricted() then
         return _G.LinkProcessorResponse and _G.LinkProcessorResponse.Handled or nil
       end
       if not IsAccessibleTable(linkData) then
         return _G.LinkProcessorResponse and _G.LinkProcessorResponse.Handled or nil
       end
-      local url = linkData.options or ""
+      local url = linkData.options
       if IsSafeChatString(url) and url ~= "" then ShowPopup(url) end
       return _G.LinkProcessorResponse and _G.LinkProcessorResponse.Handled or nil
     end)

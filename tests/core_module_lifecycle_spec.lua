@@ -51,7 +51,8 @@ do
   assert(calls.enable == 1)
   assert(calls.login == 0)
   assert(core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 1)
+  DEFAULT_CHAT_FRAME:AddMessage("active")
+  assert(calls.feed == 1)
   assert(filters.CHAT_MSG_SAY ~= nil)
 
   core:OnPlayerLogin()
@@ -63,7 +64,8 @@ do
   core:DisableModule(module.name)
   assert(calls.disable == 1)
   assert(not core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 0, "core must remove owner AddMessage hooks")
+  DEFAULT_CHAT_FRAME:AddMessage("inactive")
+  assert(calls.feed == 1, "disabled owner must stop observing messages")
   assert(filters.CHAT_MSG_SAY == nil, "core must remove owner message filters")
 
   core:Emit("PROBE")
@@ -77,7 +79,8 @@ do
   assert(calls.enable == 2)
   assert(calls.login == 1, "OnLogin is a one-shot lifecycle notification")
   assert(core:IsModuleActive(module.name))
-  assert(#core._addMsgCallbacks == 1)
+  DEFAULT_CHAT_FRAME:AddMessage("reactivated")
+  assert(calls.feed == 2, "reactivation must install exactly one observer")
 end
 
 -- A module disabled at login must receive OnLogin when first enabled later.

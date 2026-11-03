@@ -1,7 +1,7 @@
 -- RothChat - Style module
 -- Chat typography and Roth/Glass presentation for Blizzard chat frames.
 
-local ADDON_NAME, NS = ...
+local _, NS = ...
 local RothChat = _G.RothChat
 
 local M = {
@@ -18,7 +18,7 @@ local listenersRegistered = false
 local QueueApplyAll
 
 local DEFAULT_BG_TEXTURE = "Interface\\Buttons\\WHITE8X8"
-local DEFAULT_BORDER_TEXTURE = NS.BORDER_TEXTURE or "Interface\\AddOns\\RothChat\\Assets\\border"
+local DEFAULT_BORDER_TEXTURE = NS.BORDER_TEXTURE
 local DEFAULT_EDIT_CURSOR_BLINK = 0.85
 local EDIT_ALPHA_IDLE = 0.0
 local EDIT_ALPHA_FOCUS = 0.22
@@ -50,7 +50,7 @@ local function Pack(...)
 end
 
 local function CanUseObject(object)
-  return object ~= nil and (not NS.CanAccessObject or NS.CanAccessObject(object))
+  return object ~= nil and NS.CanAccessObject(object)
 end
 
 local function Call(object, methodName, ...)
@@ -59,10 +59,8 @@ local function Call(object, methodName, ...)
   if type(method) ~= "function" then return nil end
   local result = Pack(pcall(method, object, ...))
   if not result[1] then return nil end
-  if NS.CanAccessValue then
-    for index = 2, result.n do
-      if not NS.CanAccessValue(result[index]) then return nil end
-    end
+  for index = 2, result.n do
+    if not NS.CanAccessValue(result[index]) then return nil end
   end
   return unpack(result, 2, result.n)
 end
@@ -370,7 +368,7 @@ local function RestoreEditBox(state)
   end
   for index = 1, #state.textures do RestoreTexture(state.textures[index]) end
   for index = 1, #state.fonts do RestoreFont(state.fonts[index]) end
-  if NS.HideRothVisuals then NS.HideRothVisuals(editBox) end
+  NS.HideRothVisuals(editBox)
   editBox.__rothEditAlpha = nil
 end
 
@@ -458,7 +456,7 @@ local function RestoreSocialButtons()
   for button, state in pairs(socialSnapshots) do
     if CanUseObject(button) then
       RestoreButton(state)
-      if NS.HideRothVisuals then NS.HideRothVisuals(button) end
+      NS.HideRothVisuals(button)
       socialSnapshots[button] = nil
     end
   end
@@ -532,7 +530,7 @@ local function SetEditBoxGlassAlpha(eb, alpha)
   if eb.__rothEditAlpha == alpha then return end
   eb.__rothEditAlpha = alpha
   NS.ApplyGlassLook(eb, alpha)
-  if NS.UpdateGlassSize then NS.UpdateGlassSize(eb) end
+  NS.UpdateGlassSize(eb)
 end
 
 local function KillEditBoxUnderlayTextures(eb)
@@ -577,7 +575,7 @@ local function RefreshEditBoxInsets(eb)
   end
 
   local left, right, top, bottom = eb:GetTextInsets()
-  if NS.CanAccessAllValues and not NS.CanAccessAllValues(left, right, top, bottom) then return end
+  if not NS.CanAccessAllValues(left, right, top, bottom) then return end
   left, right, top, bottom = NS.SafeNumber(left, 0), NS.SafeNumber(right, 0), NS.SafeNumber(top, 0), NS.SafeNumber(bottom, 0)
   eb:SetTextInsets(
     math.max(8, left),
@@ -842,7 +840,7 @@ local function SkinChatTab(core, cf)
   for _, region in ipairs({ tab:GetRegions() }) do
     if CanUseObject(region) and region.IsObjectType and region:IsObjectType("FontString") and region ~= keepText then
       local value = region.GetText and region:GetText()
-      if not NS.CanAccessValue or NS.CanAccessValue(value) then
+      if NS.CanAccessValue(value) then
         if value == nil or (type(value) == "string" and strtrim(value) == "") then region:Hide() end
       end
     end
@@ -1052,24 +1050,16 @@ end
 local function RestoreStyleState(core)
   NS.CancelScheduled(M)
   M.__applyQueued = false
-  if type(core.CancelDeferred) == "function" then
-    core:CancelDeferred(M.__applyDeferredKey)
-  end
+  core:CancelDeferred(M.__applyDeferredKey)
   HideOwnedBackgrounds()
   local function RestoreIfDisabled()
     if IsEnabled(core) then return end
     RestoreAllStyleState()
   end
   if InCombatLockdown() then
-    if type(core.DeferKeyed) == "function" then
-      core:DeferKeyed(M.__restoreDeferredKey, RestoreIfDisabled)
-    else
-      core:Defer(RestoreIfDisabled)
-    end
+    core:DeferKeyed(M.__restoreDeferredKey, RestoreIfDisabled)
   else
-    if type(core.CancelDeferred) == "function" then
-      core:CancelDeferred(M.__restoreDeferredKey)
-    end
+    core:CancelDeferred(M.__restoreDeferredKey)
     RestoreIfDisabled()
   end
 end
@@ -1078,17 +1068,11 @@ local function DeferApplyAll(core)
   local function ApplyIfEnabled()
     if IsEnabled(core) then ApplyAllToFrames(core) end
   end
-  if type(core.DeferKeyed) == "function" then
-    core:DeferKeyed(M.__applyDeferredKey, ApplyIfEnabled)
-  else
-    core:Defer(ApplyIfEnabled)
-  end
+  core:DeferKeyed(M.__applyDeferredKey, ApplyIfEnabled)
 end
 
 QueueApplyAll = function(core)
-  if type(core.CancelDeferred) == "function" then
-    core:CancelDeferred(M.__restoreDeferredKey)
-  end
+  core:CancelDeferred(M.__restoreDeferredKey)
   if M.__applyQueued then return end
   M.__applyQueued = true
 
@@ -1176,10 +1160,8 @@ end
 function M:OnEnable(core)
   styleActive = true
   listenersRegistered = false
-  if type(core.CancelDeferred) == "function" then
-    core:CancelDeferred(M.__restoreDeferredKey)
-    core:CancelDeferred(M.__applyDeferredKey)
-  end
+  core:CancelDeferred(M.__restoreDeferredKey)
+  core:CancelDeferred(M.__applyDeferredKey)
   core:EnsureChatLifecycleHooks()
   RegisterListeners(core)
   EnsureGlobalHooks(core)
@@ -1205,10 +1187,8 @@ function M:OnDisable(core)
   listenersRegistered = false
   M.__applyQueued = false
   NS.CancelScheduled(M)
-  if type(core.CancelDeferred) == "function" then
-    core:CancelDeferred(M.__applyDeferredKey)
-    core:CancelDeferred(M.__restoreDeferredKey)
-  end
+  core:CancelDeferred(M.__applyDeferredKey)
+  core:CancelDeferred(M.__restoreDeferredKey)
 
   RestoreStyleState(core)
 end

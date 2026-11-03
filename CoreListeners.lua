@@ -7,14 +7,12 @@ local RothChat = _G.RothChat
 if not RothChat then return end
 
 RothChat._listenerStates = {}
-RothChat._listeners = {}
 
 local function GetState(self, event)
   local state = self._listenerStates[event]
   if state then return state end
   state = { entries = {}, pending = {}, depth = 0 }
   self._listenerStates[event] = state
-  self._listeners[event] = state.entries
   return state
 end
 
@@ -32,7 +30,10 @@ end
 
 local function Flush(self, event, state)
   if state.depth > 0 then return end
-  CompactEntries(state.entries)
+  if state.dirty then
+    CompactEntries(state.entries)
+    state.dirty = nil
+  end
 
   for index = 1, #state.pending do
     local entry = state.pending[index]
@@ -44,7 +45,6 @@ local function Flush(self, event, state)
 
   if #state.entries == 0 then
     self._listenerStates[event] = nil
-    self._listeners[event] = nil
   end
 end
 
@@ -70,31 +70,26 @@ function RothChat:Off(event, fn)
 
   for index = 1, #state.entries do
     local entry = state.entries[index]
-    if entry and entry.fn == fn then entry.fn = nil end
+    if entry and entry.fn == fn then entry.fn = nil; state.dirty = true end
   end
   for index = 1, #state.pending do
     local entry = state.pending[index]
-    if entry and entry.fn == fn then entry.fn = nil end
+    if entry and entry.fn == fn then entry.fn = nil; state.dirty = true end
   end
   Flush(self, event, state)
 end
 
 function RothChat:OffOwner(owner)
   if not owner then return end
-  local states = {}
+  -- Flush only removes the current key; it never adds keys during traversal.
   for event, state in pairs(self._listenerStates) do
-    states[#states + 1] = { event, state }
-  end
-
-  for index = 1, #states do
-    local event, state = states[index][1], states[index][2]
     for entryIndex = 1, #state.entries do
       local entry = state.entries[entryIndex]
-      if entry and entry.owner == owner then entry.fn = nil end
+      if entry and entry.fn and entry.owner == owner then entry.fn = nil; state.dirty = true end
     end
     for entryIndex = 1, #state.pending do
       local entry = state.pending[entryIndex]
-      if entry and entry.owner == owner then entry.fn = nil end
+      if entry and entry.fn and entry.owner == owner then entry.fn = nil; state.dirty = true end
     end
     Flush(self, event, state)
   end

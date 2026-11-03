@@ -5,8 +5,10 @@ local ADDON_NAME, NS = ...
 local RothChat = _G.RothChat
 if not RothChat then return end
 
+local frameHooks = setmetatable({}, { __mode = "k" })
 RothChat._chatLayoutRevision = 0
-function RothChat:GetChatLayoutRevision()
+function RothChat:GetChatLayoutRevision(frame)
+  if not NS.CanAccessValue(frame) or (frame ~= nil and frameHooks[frame] ~= true) then return nil end
   return self._chatLayoutRevision
 end
 
@@ -17,6 +19,35 @@ RothChat._chatLifecycleQueue = {
   frameReasons = {}, closedFrames = {},
 }
 
+local subscriptionMethods = {
+  "AddMessageGroup", "RemoveMessageGroup", "AddSingleMessageType",
+  "UnregisterAllMessageGroups", "RemoveAllMessageGroups",
+  "AddChannel", "RemoveChannel", "RemoveAllChannels",
+}
+
+local function OnSubscriptionsChanged(frame)
+  if NS.CanAccessObject(frame) then
+    RothChat:QueueChatLifecycleRefresh(frame, "subscriptions_changed")
+  end
+end
+
+function RothChat:EnsureChatFrameLifecycleHooks(frame)
+  if not NS.CanAccessObject(frame) or frameHooks[frame] ~= nil then return end
+  local complete = true
+  for _, method in ipairs(subscriptionMethods) do
+    if type(frame[method]) == "function" then
+      -- One attempt per frame/method; denied hooks are not retried on updates.
+      if not NS.SafeCall("RothChat:ChatSubscriptionHook", hooksecurefunc, frame, method, OnSubscriptionsChanged) then
+        complete = false
+      end
+    else
+      complete = false
+    end
+  end
+  -- An incomplete invalidation path can still observe messages, but cannot
+  -- authorize reuse of a cached window fingerprint.
+  frameHooks[frame] = complete
+end
 
 local function ResetQueue(queue)
   queue.queued = false
@@ -155,6 +186,12 @@ function RothChat:EnsureChatLifecycleHooks()
   if type(_G.FCF_RestoreChatsToFrame) == "function" then
     hooksecurefunc("FCF_RestoreChatsToFrame", function(targetFrame)
       QueueFrame(targetFrame, "restore_chat_subscriptions")
+    end)
+  end
+
+  if type(_G.FCF_SetWindowName) == "function" then
+    hooksecurefunc("FCF_SetWindowName", function(chatFrame)
+      if NS.CanAccessObject(chatFrame) then QueueFrame(chatFrame, "window_name_changed") end
     end)
   end
 end
