@@ -50,11 +50,16 @@ local function Flush(self, event, state)
 end
 
 function RothChat:On(event, fn, owner)
-  if type(event) ~= "string" or type(fn) ~= "function" then return end
+  if not NS.CanAccessAllValues(event, fn, owner)
+    or type(event) ~= "string" or type(fn) ~= "function"
+  then
+    return false
+  end
+
   local state = GetState(self, event)
   for _, entries in ipairs({ state.entries, state.pending }) do
     for _, existing in ipairs(entries) do
-      if existing.fn == fn and existing.owner == owner then return end
+      if existing.fn == fn and existing.owner == owner then return true end
     end
   end
   nextListenerID = nextListenerID + 1
@@ -64,11 +69,18 @@ function RothChat:On(event, fn, owner)
   else
     state.entries[#state.entries + 1] = entry
   end
+  return true
 end
 
 function RothChat:Off(event, fn)
+  if not NS.CanAccessAllValues(event, fn)
+    or type(event) ~= "string" or type(fn) ~= "function"
+  then
+    return false
+  end
+
   local state = self._listenerStates[event]
-  if not state or type(fn) ~= "function" then return end
+  if not state then return false end
 
   for index = 1, #state.entries do
     local entry = state.entries[index]
@@ -79,10 +91,11 @@ function RothChat:Off(event, fn)
     if entry and entry.fn == fn then entry.fn = nil; state.dirty = true end
   end
   Flush(self, event, state)
+  return true
 end
 
 function RothChat:OffOwner(owner)
-  if not owner then return end
+  if owner == nil or not NS.CanAccessValue(owner) then return false end
   -- Flush only removes the current key; it never adds keys during traversal.
   for event, state in pairs(self._listenerStates) do
     for entryIndex = 1, #state.entries do
@@ -95,12 +108,13 @@ function RothChat:OffOwner(owner)
     end
     Flush(self, event, state)
   end
+  return true
 end
 
 function RothChat:Emit(event, ...)
-  if not NS.CanAccessAllValues(...) then return end
+  if not NS.CanAccessAllValues(event, ...) or type(event) ~= "string" then return false end
   local state = self._listenerStates[event]
-  if not state then return end
+  if not state then return true end
 
   state.depth = state.depth + 1
   local limit = #state.entries
@@ -118,4 +132,5 @@ function RothChat:Emit(event, ...)
   end
   state.depth = state.depth - 1
   Flush(self, event, state)
+  return true
 end
