@@ -44,6 +44,15 @@ Tree `a8c23e89733f1cfe47abd5d17aa184bf2256812d` received focused Lua 5.3.6 and L
 
 Tree `9533f200f269ca6f5fd1efaa8b90b28994877036` received focused Lua 5.3.6 and Lua 5.4 checks for owner-aware fade replacement, conflict-safe Ticker alpha/mouse teardown, restriction cleanup, per-filter diagnostic isolation and suppression counts. The complete Lua 5.1/5.4 gate was not run for that follow-up before merge.
 
+### Native Alerts and continuous-validation pass — 2026-11-04
+
+Tree `80ad1af55e610e2cab42110060e960c60ef8f0cc` passed the complete automated gate twice:
+
+- pull-request run `41819556174` for head `74fbd80d573d46e47f37d63ef7cf3d8a5933b2a7`;
+- `main` push run `41820170059` for commit `218c89cf306ea906dc0a2127245e8441e0bc3db2`.
+
+Both runs reported addon `1.2.0`, Interface `120105`, 27 load entries, unique shared owners, 51 parsed Lua files and all 24 discovered contract specs passing on both Lua 5.1 and Lua 5.4. The tree identities are equal; the merge endpoint failure did not change the reviewed content.
+
 Do not inherit a PASS from an earlier tree after production or test files change. Record the exact candidate commit and workflow run before release.
 
 ## Live-client gate
