@@ -141,19 +141,27 @@ assert(#bucket.entries == 5 and bucket.entries[1][6] == 2)
 assert(core:GetRestoreText(frame, 20, false) == "m1\nm2\nm3\nm4\nm5")
 assert(core:GetRestoreText(frame, 20, true):find("[12:34:56] m1", 1, true))
 
--- Unknown future row semantics stay hidden; valid rows still fill capacity.
+-- Exact audit scenario: 1000 durable rows, native capacity 128. A newer
+-- unknown row at the end is skipped and does not consume replay capacity.
+bucket.entries = {}
+for index = 1, 1000 do
+  bucket.entries[index] = { 12345, "m" .. index, 0.1, 0.2, 0.3, 2 }
+end
 bucket.entries[#bucket.entries + 1] = { 12345, "future-row", 1, 1, 1, 3 }
-assert(not core:GetRestoreText(frame, 20, false):find("future-row", 1, true))
+assert(not core:GetRestoreText(frame, 1001, false):find("future-row", 1, true))
+assert(core:GetRestoreText(frame, 5, false) == "m996\nm997\nm998\nm999\nm1000",
+  "unknown rows must not consume the valid export-line budget")
 
 runtimeActive = false
 module:OnDisable(core)
 runtimeActive = true
 module:OnEnable(core)
+frameCapacity = 128
 messageCount, replayed, timestampsActive = 0, {}, false
 module:OnLogin(core)
-assert(#replayed == 3)
-assert(replayed[1][1] == "m3" and replayed[2][1] == "m4" and replayed[3][1] == "m5")
-assert(frameCapacity == 3)
+assert(#replayed == 128)
+assert(replayed[1][1] == "m873" and replayed[128][1] == "m1000")
+assert(frameCapacity == 128)
 
 -- Existing native history or unknown native capacity suppresses replay.
 runtimeActive = false
@@ -170,7 +178,23 @@ module:OnEnable(core)
 messageCount, replayed, frameCapacity = 0, {}, inaccessibleValue
 module:OnLogin(core)
 assert(#replayed == 0)
-frameCapacity = 3
+frameCapacity = 128
+
+runtimeActive = false
+module:OnDisable(core)
+runtimeActive = true
+module:OnEnable(core)
+messageCount, replayed = -1, {}
+module:OnLogin(core)
+assert(#replayed == 0, "negative native message counts must not authorize replay")
+runtimeActive = false
+module:OnDisable(core)
+runtimeActive = true
+module:OnEnable(core)
+messageCount, replayed, frameCapacity = 0, {}, 3.5
+module:OnLogin(core)
+assert(#replayed == 0, "fractional native capacity must not authorize replay")
+frameCapacity = 128
 
 -- Native timestamp presentation is reconstructed only during replay.
 runtimeActive = false
@@ -179,7 +203,7 @@ runtimeActive = true
 module:OnEnable(core)
 messageCount, replayed, nativeTimestamps, timestampsActive = 0, {}, true, true
 module:OnLogin(core)
-assert(#replayed == 3 and replayed[1][1] == "[12:34] m3")
+assert(#replayed == 128 and replayed[1][1] == "[12:34] m873" and replayed[128][1] == "[12:34] m1000")
 nativeTimestamps = false
 
 -- Identity permission and revision changes cannot leak a previous slot.
