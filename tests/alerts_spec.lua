@@ -1,4 +1,4 @@
--- Alerts owns only the flashes it successfully starts.
+-- Alerts extends native tab policy without owning native alert state or audio.
 
 local registeredModule
 local addMessageHook
@@ -7,22 +7,28 @@ local inaccessibleValue
 local inaccessibleObject
 local startCount = 0
 local stopCount = 0
+local alertingTabs = setmetatable({}, { __mode = "k" })
 
 local frame = { inUse = true, GetName = function() return "ChatFrame2" end }
 local addonFrame = { inUse = true, GetName = function() return "ChatFrame3" end }
 local selectedFrame = {}
-local nativeTab = { alerting = true }
-local addonTab = {} -- Native tabs may have no alert flag before their first flash.
+local nativeTab = { alerting = false }
+local addonTab = { alerting = true }
 _G.ChatFrame2Tab = nativeTab
 _G.ChatFrame3Tab = addonTab
 _G.SELECTED_CHAT_FRAME = selectedFrame
+_G.ChatFrameUtil = {
+  IsTabAlerting = function(tab) return alertingTabs[tab] == true end,
+}
 _G.FCF_StartAlertFlash = function(target)
   startCount = startCount + 1
-  if target == addonFrame then addonTab.alerting = true else nativeTab.alerting = true end
+  local tab = target == addonFrame and addonTab or nativeTab
+  alertingTabs[tab] = true
 end
 _G.FCF_StopAlertFlash = function(target)
   stopCount = stopCount + 1
-  if target == addonFrame then addonTab.alerting = false else nativeTab.alerting = false end
+  local tab = target == addonFrame and addonTab or nativeTab
+  alertingTabs[tab] = nil
 end
 
 _G.RothChat = {
@@ -40,14 +46,12 @@ local NS = {
   end,
   IsDockedChatFrame = function(candidate) return candidate == frame or candidate == addonFrame end,
   GetSelectedDockChatFrame = function() return selectedFrame end,
-  GetChatFrames = function() return { frame, addonFrame } end,
 }
 
 assert(loadfile("Modules/Alerts.lua"))("RothChat", NS)
 local module = assert(registeredModule)
 local core = {
   IsModuleActive = function(_, name) return name == "Alerts" end,
-  EnsureChatLifecycleHooks = function() end,
   RegisterAddMessageHook = function(_, callback, owner)
     assert(owner == module)
     addMessageHook = callback
@@ -56,14 +60,11 @@ local core = {
     assert(owner == module)
     addMessageHook = nil
   end,
-  On = function() end,
 }
 
 module:Init(core)
 module:OnEnable(core)
 assert(type(addMessageHook) == "function")
-assert(nativeTab.alerting and startCount == 0 and stopCount == 0,
-  "enable must leave a pre-existing native flash alone")
 
 restricted = true
 addMessageHook(frame, "restricted message")
@@ -76,23 +77,51 @@ addMessageHook(frame, secretText)
 assert(startCount == 0, "an inaccessible AddMessage payload must not drive tab alerting")
 inaccessibleValue = nil
 
+-- Current Retail stores native alert state outside the tab object. A misleading
+-- direct field must never cause a duplicate native flash.
+alertingTabs[nativeTab] = true
+nativeTab.alerting = false
 addMessageHook(frame, "ordinary text on an already-flashing native tab")
-assert(nativeTab.alerting and startCount == 0,
-  "Alerts must not claim or restart a flash it did not start")
+assert(startCount == 0, "Alerts must consult ChatFrameUtil.IsTabAlerting")
 
+-- Roth's extension requests one native flash for an inactive docked tab, then
+-- lets Blizzard own the state and animation. Repeated messages do not restart it.
+alertingTabs[addonTab] = nil
+addonTab.alerting = true
 addMessageHook(addonFrame, "ordinary displayed text")
-assert(startCount == 1 and addonTab.alerting)
+assert(startCount == 1 and alertingTabs[addonTab])
+addMessageHook(addonFrame, "another message while native flash is active")
+assert(startCount == 1)
+
+-- Selected, undocked, inactive, restoring and inaccessible frames are excluded.
+selectedFrame = addonFrame
+addMessageHook(addonFrame, "selected tab")
+assert(startCount == 1)
+selectedFrame = {}
+addonFrame.inUse = false
+addMessageHook(addonFrame, "inactive frame")
+assert(startCount == 1)
+addonFrame.inUse = true
+addonFrame.__rothRestoring = true
+addMessageHook(addonFrame, "restore replay")
+assert(startCount == 1)
+addonFrame.__rothRestoring = nil
+inaccessibleObject = addonFrame
+addMessageHook(addonFrame, "inaccessible frame")
+assert(startCount == 1)
+inaccessibleObject = nil
 
 module:OnDisable(core)
 assert(addMessageHook == nil)
-assert(nativeTab.alerting and not addonTab.alerting,
-  "disable must stop the addon-owned flash and preserve the native flash")
-assert(stopCount == 1)
+assert(alertingTabs[nativeTab] and alertingTabs[addonTab],
+  "disable must not stop native-owned flashes")
+assert(stopCount == 0)
 
 module:OnEnable(core)
-addMessageHook(addonFrame, "another message after the flag was cleared")
-assert(startCount == 2 and addonTab.alerting)
+alertingTabs[addonTab] = nil
+addMessageHook(addonFrame, "new inactive-tab message")
+assert(startCount == 2 and alertingTabs[addonTab])
 module:OnDisable(core)
-assert(stopCount == 2 and nativeTab.alerting and not addonTab.alerting)
+assert(stopCount == 0)
 
 print("alerts_spec: ok")
