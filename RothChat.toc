@@ -38,3 +38,4 @@ Modules\Alerts.lua
 Modules\Sticky.lua
 
 Options.lua
+OptionsBootstrap.lua
