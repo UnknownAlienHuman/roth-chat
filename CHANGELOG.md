@@ -37,7 +37,8 @@ All notable Roth Chat changes are recorded here.
 
 - Make `CHAT_FRAME_CLOSED` terminal within its coalesced lifecycle flush so a fixed-pool frame cannot be closed and re-announced ready in the same generation.
 - Remove Restore ownership of Blizzard fading and `ScrollingMessageFrame:SetMaxLines`; durable retention remains independent and replay is capped by the frame's current native capacity.
-- Select the newest valid Restore rows until replay capacity is filled, skipping unknown future row versions instead of treating them as legacy data.
+- Select the newest valid Restore rows until replay capacity is filled, skipping unknown future row versions instead of treating them as legacy data. Apply the same valid-row budget to copy/export.
+- Reject malformed negative/fractional native message counts and frame capacities instead of treating them as replay permission.
 - Remove the unused synchronous `CHAT_FEED` emission from Restore's per-message path.
 - Record denied per-frame `AddMessage` hook attempts as terminal so native update bursts cannot retry the same forbidden operation.
 
