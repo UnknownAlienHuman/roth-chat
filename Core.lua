@@ -488,7 +488,12 @@ end
 -- -----------------------------------------------------------------------------
 
 function RothChat:DeferKeyed(key, callback, ...)
-  if key == nil or type(callback) ~= "function" or not NS.CanAccessAllValues(...) then return false end
+  if not NS.CanAccessAllValues(key, callback) or key == nil
+    or type(callback) ~= "function" or not NS.CanAccessAllValues(...)
+  then
+    return false
+  end
+
   local job = self._deferredByKey[key]
   if job then
     job.fn, job.args = callback, NS.Pack(...)
@@ -510,12 +515,14 @@ function RothChat:DeferKeyed(key, callback, ...)
 end
 
 function RothChat:CancelDeferred(key)
+  if key == nil or not NS.CanAccessValue(key) then return false end
   local job = self._deferredByKey[key]
-  if not job then return end
+  if not job then return false end
   job.fn = nil
   self._deferredByKey[key] = nil
   self._deferredCount = self._deferredCount - 1
   if self._deferredCount == 0 then self._deferred = {} end
+  return true
 end
 
 function RothChat:RunDeferred()
