@@ -1,21 +1,56 @@
 -- RothChat - current Retail access, diagnostics and native chat adapters.
 local _, NS = ...
 
+-- Script-object access is current-context capability. Read optional security
+-- methods through pcall, gate their results, and fail closed when a present
+-- method is unreadable, malformed, or throws.
+local function ReadObjectField(object, name)
+  return object[name]
+end
+
+local function GetOptionalObjectMethod(object, name)
+  local ok, method = pcall(ReadObjectField, object, name)
+  if not ok or not NS.CanAccessValue(method) then return nil, false end
+  if method == nil then return nil, true end
+  if type(method) ~= "function" then return nil, false end
+  return method, true
+end
+
+local function CallBooleanObjectMethod(object, method)
+  local ok, value = pcall(method, object)
+  if not ok or not NS.CanAccessValue(value) or type(value) ~= "boolean" then
+    return nil
+  end
+  return value
+end
+
 function NS.CanAccessObject(object)
   if not NS.CanAccessValue(object) or object == nil then return false end
   local kind = type(object)
   if kind ~= "table" and kind ~= "userdata" then return false end
-  if kind == "table" and type(_G.canaccesstable) == "function" then
-    local ok, allowed = pcall(_G.canaccesstable, object)
-    if not ok or not NS.CanAccessValue(allowed) or not allowed then return false end
+  if kind == "table" and not NS.CanAccessTable(object) then return false end
+
+  local hasConstraints, readable = GetOptionalObjectMethod(object, "HasAccessConstraints")
+  if not readable then return false end
+  local constrained = false
+  if hasConstraints then
+    constrained = CallBooleanObjectMethod(object, hasConstraints)
+    if constrained == nil then return false end
   end
-  if type(object.CanBeAccessedInContext) == "function" then
-    local ok, allowed = pcall(object.CanBeAccessedInContext, object)
-    if not ok or not NS.CanAccessValue(allowed) or not allowed then return false end
+
+  local canAccess, accessReadable = GetOptionalObjectMethod(object, "CanBeAccessedInContext")
+  if not accessReadable then return false end
+  if canAccess then
+    if CallBooleanObjectMethod(object, canAccess) ~= true then return false end
+  elseif constrained then
+    return false
   end
-  if type(object.IsForbidden) == "function" then
-    local ok, forbidden = pcall(object.IsForbidden, object)
-    if not ok or not NS.CanAccessValue(forbidden) or forbidden then return false end
+
+  local isForbidden, forbiddenReadable = GetOptionalObjectMethod(object, "IsForbidden")
+  if not forbiddenReadable then return false end
+  if isForbidden then
+    local forbidden = CallBooleanObjectMethod(object, isForbidden)
+    if forbidden == nil or forbidden then return false end
   end
   return true
 end

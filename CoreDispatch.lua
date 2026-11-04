@@ -2,8 +2,8 @@
 local _, NS = ...
 local core = _G.RothChat
 
-local FILTER_ERROR_WINDOW = 10
-local nextFilterRegistrationID = 0
+local CALLBACK_ERROR_WINDOW = 10
+local nextRegistrationID = 0
 
 local function InsertSorted(entries, entry)
   for index = 1, #entries do
@@ -55,13 +55,13 @@ end
 
 local function AddEntry(state, callback, owner, priority)
   if Find(state, callback, owner) then return end
-  nextFilterRegistrationID = nextFilterRegistrationID + 1
-  local entry = { callback, owner, NS.SafeNumber(priority, 50), nil, nextFilterRegistrationID }
+  nextRegistrationID = nextRegistrationID + 1
+  local entry = { callback, owner, NS.SafeNumber(priority, 50), nil, nextRegistrationID }
   if state.depth > 0 then state.pending[#state.pending + 1] = entry
   else InsertSorted(state.entries, entry) end
 end
 
-local function ReportFilterFailure(event, entry)
+local function ReportCallbackFailure(prefix, entry)
   local now = NS.SafeNumber(GetTime(), 0)
   local failure = entry[4]
   if not failure then
@@ -70,12 +70,12 @@ local function ReportFilterFailure(event, entry)
   end
 
   local lastReport = failure.lastReport
-  if lastReport and now - lastReport < FILTER_ERROR_WINDOW then
+  if lastReport and now - lastReport < CALLBACK_ERROR_WINDOW then
     failure.suppressed = failure.suppressed + 1
     return
   end
 
-  local label = "RothChat:MsgFilter:" .. event .. "#" .. tostring(entry[5])
+  local label = prefix .. "#" .. tostring(entry[5])
   if failure.suppressed > 0 then
     label = label .. " (" .. failure.suppressed .. " repeats suppressed)"
   end
@@ -102,6 +102,7 @@ local function NewFilterState(event)
   local state = { entries = {}, pending = {}, depth = 0, registered = false }
   state.dispatcher = function(chatFrame, _, ...)
     if not state.registered or #state.entries == 0 or NS.IsChatMessagingRestricted()
+      or (chatFrame ~= nil and not NS.CanAccessObject(chatFrame))
       or not NS.CanAccessAllValues(...)
     then return false end
 
@@ -117,7 +118,7 @@ local function NewFilterState(event)
       if entry[1] then
         local ok, discard, replacement = pcall(entry[1], chatFrame, event, NS.Unpack(args))
         if not ok then
-          ReportFilterFailure(event, entry)
+          ReportCallbackFailure("RothChat:MsgFilter:" .. event, entry)
         else
           entry[4] = nil
           if NS.CanAccessValue(discard) then
@@ -141,7 +142,11 @@ local function NewFilterState(event)
 end
 
 function core:RegisterMessageFilter(owner, event, callback, priority)
-  if type(owner) ~= "table" or type(event) ~= "string" or type(callback) ~= "function" then return false end
+  if not NS.CanAccessAllValues(owner, event, callback, priority)
+    or type(owner) ~= "table" or type(event) ~= "string" or type(callback) ~= "function"
+  then
+    return false
+  end
   local state = self._messageFilterState[event]
   if not state then
     state = NewFilterState(event)
@@ -159,7 +164,7 @@ function core:RegisterMessageFilter(owner, event, callback, priority)
 end
 
 function core:RegisterMessageFilters(owner, events, callback, priority)
-  if type(events) ~= "table" then return 0 end
+  if not NS.CanAccessTable(events) then return 0 end
   local count = 0
   for _, event in ipairs(events) do
     if self:RegisterMessageFilter(owner, event, callback, priority) then count = count + 1 end
@@ -168,7 +173,7 @@ function core:RegisterMessageFilters(owner, events, callback, priority)
 end
 
 function core:UnregisterMessageFilters(owner)
-  if not owner then return end
+  if not NS.CanAccessValue(owner) or owner == nil then return end
   for event, state in pairs(self._messageFilterState) do
     RemoveOwner(state, owner)
     FlushFilter(event, state)
@@ -194,7 +199,14 @@ local function DispatchAddMessage(frame, text, r, g, b)
   local limit = #messageState.entries
   for index = 1, limit do
     local entry = messageState.entries[index]
-    if entry[1] then NS.SafeCall("RothChat:AddMessage", entry[1], frame, text, r, g, b) end
+    if entry[1] then
+      local ok = pcall(entry[1], frame, text, r, g, b)
+      if ok then
+        entry[4] = nil
+      else
+        ReportCallbackFailure("RothChat:AddMessage", entry)
+      end
+    end
   end
   messageState.depth = messageState.depth - 1
   Flush(messageState)
@@ -213,14 +225,18 @@ function core:EnsureAddMsgHookForFrame(frame)
 end
 
 function core:RegisterAddMessageHook(callback, owner, priority)
-  if type(callback) ~= "function" then return false end
+  if not NS.CanAccessAllValues(callback, owner, priority)
+    or type(callback) ~= "function" or type(owner) ~= "table"
+  then
+    return false
+  end
   AddEntry(messageState, callback, owner, priority)
   for _, frame in ipairs(NS.GetActiveChatFrames()) do self:EnsureAddMsgHookForFrame(frame) end
   return true
 end
 
 function core:UnregisterAddMessageHooks(owner)
-  if not owner then return end
+  if not NS.CanAccessValue(owner) or owner == nil then return end
   RemoveOwner(messageState, owner)
   Flush(messageState)
 end

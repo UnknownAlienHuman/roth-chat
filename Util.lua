@@ -35,6 +35,16 @@ function NS.CanAccessAllValues(...)
   return true
 end
 
+-- Table access is a separate capability. The query result can itself be
+-- inaccessible, and a failing query must not fall through to iteration.
+function NS.CanAccessTable(value)
+  if not NS.CanAccessValue(value) or type(value) ~= "table" then return false end
+  local query = _G.canaccesstable
+  if type(query) ~= "function" then return true end
+  local ok, accessible = pcall(query, value)
+  return ok and NS.CanAccessValue(accessible) and accessible == true
+end
+
 function NS.SafeNumber(value, fallback)
   if not NS.CanAccessValue(value) or type(value) ~= "number"
     or value ~= value or value == math.huge or value == -math.huge
@@ -109,12 +119,24 @@ function NS.SafeTrunc(text, maxChars)
 end
 
 function NS.CopyTable(source, target)
-  target = target or {}
-  if not NS.CanAccessValue(source) or type(source) ~= "table" then return target end
-  if type(_G.canaccesstable) == "function" and not _G.canaccesstable(source) then return target end
-  for key, value in pairs(source) do
-    if NS.CanAccessAllValues(key, value) then target[key] = value end
+  if not NS.CanAccessValue(target) then return {} end
+  if target == nil then
+    target = {}
+  elseif not NS.CanAccessTable(target) then
+    return target
   end
+  if not NS.CanAccessTable(source) then return target end
+
+  -- Stage the copy so an iteration failure cannot leave a partially mutated
+  -- ownership snapshot behind.
+  local staged = {}
+  local ok = pcall(function()
+    for key, value in pairs(source) do
+      if NS.CanAccessAllValues(key, value) then staged[key] = value end
+    end
+  end)
+  if not ok then return target end
+  for key, value in pairs(staged) do target[key] = value end
   return target
 end
 
@@ -151,7 +173,11 @@ local function SchedulerOnUpdate(self)
 end
 
 function NS.Schedule(key, delay, callback, label, ...)
-  if key == nil or type(callback) ~= "function" or not NS.CanAccessAllValues(...) then return false end
+  if not NS.CanAccessAllValues(key, callback, label) or key == nil
+    or type(callback) ~= "function" or not NS.CanAccessAllValues(...)
+  then
+    return false
+  end
   if not scheduledJobs[key] then
     if scheduledCount >= MAX_SCHEDULED_JOBS then return false end
     scheduledCount = scheduledCount + 1
@@ -173,6 +199,7 @@ function NS.RunNextFrame(key, callback, label, ...)
 end
 
 function NS.CancelScheduled(key)
+  if not NS.CanAccessValue(key) then return end
   if key ~= nil and scheduledJobs[key] then
     scheduledJobs[key] = nil
     scheduledCount = scheduledCount - 1

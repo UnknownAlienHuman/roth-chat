@@ -24,6 +24,29 @@ closed.forbidden = false
 closed.CanBeAccessedInContext = function() return env.inaccessible end
 assert(not NS.CanAccessObject(closed))
 
+-- A constrained object needs an ordinary positive current-context result.
+local constrained = CreateFrame("Frame", "ConstrainedObject")
+constrained.HasAccessConstraints = function() return true end
+constrained.CanBeAccessedInContext = function() return false end
+assert(not NS.CanAccessObject(constrained))
+constrained.CanBeAccessedInContext = function() return true end
+assert(NS.CanAccessObject(constrained))
+constrained.CanBeAccessedInContext = nil
+assert(not NS.CanAccessObject(constrained), "a constrained object without a context gate must fail closed")
+
+-- Security-method lookup and boolean results are themselves capability gates.
+local unreadableMethod = setmetatable({}, {
+  __index = function(_, key)
+    if key == "HasAccessConstraints" then error("method lookup denied") end
+  end,
+})
+assert(not NS.CanAccessObject(unreadableMethod))
+local malformed = { HasAccessConstraints = true }
+assert(not NS.CanAccessObject(malformed))
+local forbiddenResult = CreateFrame("Frame", "ForbiddenResult")
+forbiddenResult.IsForbidden = function() return env.inaccessible end
+assert(not NS.CanAccessObject(forbiddenResult))
+
 local result = NS.Pack(NS.SafeCall("multi", function(a, b)
   assert(a == "a" and b == "b")
   return 1, nil, 3, nil
