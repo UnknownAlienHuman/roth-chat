@@ -21,11 +21,25 @@ for _, name in ipairs({ "CHAT_LAYOUT_CHANGED", "CHAT_FRAME_READY", "CHAT_FRAME_C
   local event = name
   core:On(event, function(_, _, frame) emitted[#emitted + 1] = {event, frame} end, {})
 end
+
+-- One denied global hook must not abort the remaining lifecycle installation,
+-- and the denied entry point must not be retried on a later ensure pass.
+local nativeHooksecurefunc = hooksecurefunc
+local deniedAttempts = 0
+hooksecurefunc = function(target, ...)
+  if target == "FCFDock_SelectWindow" then
+    deniedAttempts = deniedAttempts + 1
+    error("denied global lifecycle hook")
+  end
+  return nativeHooksecurefunc(target, ...)
+end
 core:OnAddonLoaded()
-core:EnsureChatLifecycleHooks()
 local closeHook = assert(env.hooks.FCF_Close)
+assert(deniedAttempts == 1 and env.hooks.FCFDock_SelectWindow == nil)
 core:EnsureChatLifecycleHooks()
 assert(env.hooks.FCF_Close == closeHook, "hooks must be installed only once")
+assert(deniedAttempts == 1, "a denied permanent hook must not be retried")
+hooksecurefunc = nativeHooksecurefunc
 
 core:QueueChatLifecycleRefresh(nil, "initial")
 core:QueueChatLifecycleRefresh(env.frame, "again")
@@ -36,6 +50,22 @@ assert(emitted[2][1] == "CHAT_FRAME_READY" and emitted[2][2] == env.frame)
 assert(core:GetChatLayoutRevision(env.frame) == core:GetChatLayoutRevision())
 core:EnsureChatFrameLifecycleHooks(inactive)
 assert(core:GetChatLayoutRevision(inactive) == nil, "missing invalidation methods must disable caching")
+
+-- A hostile method lookup is evidence of an incomplete frame contract, not a
+-- reason to throw or to authorize cached identity reuse.
+local hostile = {
+  HasAccessConstraints = function() return false end,
+  CanBeAccessedInContext = function() return true end,
+  IsForbidden = function() return false end,
+}
+setmetatable(hostile, {
+  __index = function(_, key)
+    if key == "AddMessageGroup" then error("denied method lookup") end
+    return nil
+  end,
+})
+core:EnsureChatFrameLifecycleHooks(hostile)
+assert(core:GetChatLayoutRevision(hostile) == nil)
 
 -- Native subscription/name changes invalidate identity before another message
 -- can reuse the cache, without waiting for a global update event.

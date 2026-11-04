@@ -7,6 +7,7 @@ local RothChat = _G.RothChat
 if not RothChat then return end
 
 RothChat._listenerStates = {}
+local nextListenerID = 0
 
 local function GetState(self, event)
   local state = self._listenerStates[event]
@@ -56,7 +57,8 @@ function RothChat:On(event, fn, owner)
       if existing.fn == fn and existing.owner == owner then return end
     end
   end
-  local entry = { fn = fn, owner = owner }
+  nextListenerID = nextListenerID + 1
+  local entry = { fn = fn, owner = owner, id = nextListenerID }
   if state.depth > 0 then
     state.pending[#state.pending + 1] = entry
   else
@@ -105,7 +107,13 @@ function RothChat:Emit(event, ...)
   for index = 1, limit do
     local entry = state.entries[index]
     if entry and type(entry.fn) == "function" then
-      NS.SafeCall("RothChat:Emit:" .. event, entry.fn, entry.owner, self, ...)
+      NS.SafeCall(
+        "RothChat:Emit:" .. event .. "#" .. tostring(entry.id),
+        entry.fn,
+        entry.owner,
+        self,
+        ...
+      )
     end
   end
   state.depth = state.depth - 1

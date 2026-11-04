@@ -28,3 +28,10 @@ jobs:
 
       - name: Validate metadata, load ownership, syntax and every contract
         run: python3 scripts/validate.py --lua lua5.1 --lua lua5.4
+
+      - name: Build and compare deterministic install archives
+        run: |
+          python3 scripts/package.py /tmp/RothChat-a.zip
+          python3 scripts/package.py /tmp/RothChat-b.zip
+          cmp /tmp/RothChat-a.zip /tmp/RothChat-b.zip
+          python3 scripts/package.py --verify /tmp/RothChat-a.zip
