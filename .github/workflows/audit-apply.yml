@@ -1,0 +1,49 @@
+name: Audit branch apply and validate
+
+on:
+  push:
+    branches:
+      - audit/1.2.1-runtime-ownership
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply audited tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .audit-payload.part-* | base64 -d > /tmp/audit.tar.xz
+          echo "386e9d571a5e23375547d3b528746759f208097c6a91a894e1f394666f1ecf89  /tmp/audit.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/audit.tar.xz -C .
+          while IFS= read -r path; do
+            rm -f -- "$path"
+          done < .audit-delete
+          rm -f .audit-delete .audit-files .audit-payload.part-*
+          rm -f .github/workflows/audit-apply.yml
+
+      - name: Install Lua runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 lua5.4
+
+      - name: Validate repository
+        run: python3 scripts/validate.py --lua lua5.1 --lua lua5.4
+
+      - name: Publish audited tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Audit runtime ownership and remove duplicate chat behavior"
+          git push origin HEAD:${GITHUB_REF_NAME}
