@@ -12,6 +12,7 @@ local M = {
 
 local overlays = setmetatable({}, { __mode = "k" })
 local EMPTY_COPY_PLACEHOLDER = "(No copyable chat lines available.)"
+local ALPHA_EPSILON = 0.01
 local copyActive = false
 local DEFERRED_APPLY_KEY = {}
 
@@ -30,6 +31,35 @@ end
 local function SanitizeName(value)
   value = NS.SafeToString(value):gsub("[^%w_]", "_")
   return value == "" and "Chat" or value
+end
+
+local function GetAlpha(frame)
+  if not NS.CanAccessObject(frame) or type(frame.GetAlpha) ~= "function" then return nil end
+  local ok, alpha = pcall(frame.GetAlpha, frame)
+  if not ok then return nil end
+  return NS.SafeNumber(alpha)
+end
+
+local function RestoreOwnedChatAlpha(overlay)
+  local chatFrame = overlay and overlay.chatFrame
+  local previousAlpha = overlay and overlay._prevChatAlpha
+  local lastWrite = overlay and overlay._lastChatAlphaWrite
+  if overlay then
+    overlay._prevChatAlpha = nil
+    overlay._lastChatAlphaWrite = nil
+  end
+  if not NS.CanAccessObject(chatFrame) then return end
+
+  local hadActiveFade = type(NS.IsFading) == "function" and NS.IsFading(chatFrame) or false
+  local ownsActiveFade = type(NS.StopOwnedFade) == "function" and NS.StopOwnedFade(chatFrame, M) or false
+  local currentAlpha = GetAlpha(chatFrame)
+  local alphaStillOwned = ownsActiveFade
+    or (not hadActiveFade and type(lastWrite) == "number" and type(currentAlpha) == "number"
+      and math.abs(currentAlpha - lastWrite) < ALPHA_EPSILON)
+
+  if alphaStillOwned and type(previousAlpha) == "number" then
+    NS.FadeTo(chatFrame, previousAlpha, 0.15, nil, M)
+  end
 end
 
 local function EnsureUISpecialFrame(name)
@@ -183,9 +213,10 @@ local function BuildOverlay(core, chatFrame)
     end
 
     closer:Show()
-    self._prevChatAlpha = chatFrame:GetAlpha()
+    self._prevChatAlpha = GetAlpha(chatFrame)
+    self._lastChatAlphaWrite = 0
     core:Emit("COPY_OVERLAY_VISIBILITY", chatFrame, true)
-    NS.FadeTo(chatFrame, 0, 0.15)
+    NS.FadeTo(chatFrame, 0, 0.15, nil, M)
 
     self.__focusScheduleKey = self.__focusScheduleKey or {}
     NS.RunNextFrame(self.__focusScheduleKey, function()
@@ -200,14 +231,8 @@ local function BuildOverlay(core, chatFrame)
   overlay:SetScript("OnHide", function(self)
     closer:Hide()
     NS.CancelScheduled(self.__focusScheduleKey)
-
-    local previousAlpha = self._prevChatAlpha
-    if type(previousAlpha) ~= "number" then previousAlpha = 1 end
-    NS.FadeTo(chatFrame, previousAlpha, 0.15)
-    self._prevChatAlpha = nil
-
+    RestoreOwnedChatAlpha(self)
     ClearOverlayText(self)
-
     core:Emit("COPY_OVERLAY_VISIBILITY", chatFrame, false)
   end)
 
@@ -343,9 +368,6 @@ function M:OnEnable(core)
       end
     end
   end, self)
-end
-
-function M:OnLogin(core)
 end
 
 function M:OnDisable(core)
