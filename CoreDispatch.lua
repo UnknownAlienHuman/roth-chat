@@ -168,10 +168,15 @@ local function DispatchAddMessage(frame, text, r, g, b)
 end
 
 function core:EnsureAddMsgHookForFrame(frame)
-  if not NS.CanAccessObject(frame) or self._addMsgHooked[frame] or type(frame.AddMessage) ~= "function" then return end
+  if not NS.CanAccessObject(frame) or self._addMsgHooked[frame] ~= nil
+    or type(frame.AddMessage) ~= "function"
+  then
+    return
+  end
   self:EnsureChatFrameLifecycleHooks(frame)
-  local ok = pcall(hooksecurefunc, frame, "AddMessage", DispatchAddMessage)
-  if ok then self._addMsgHooked[frame] = true end
+  -- A denied hook is terminal for this frame lifetime. Repeating the same
+  -- forbidden operation on every native update only creates an error storm.
+  self._addMsgHooked[frame] = pcall(hooksecurefunc, frame, "AddMessage", DispatchAddMessage)
 end
 
 function core:RegisterAddMessageHook(callback, owner, priority)

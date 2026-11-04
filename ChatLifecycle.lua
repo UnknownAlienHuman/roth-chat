@@ -93,12 +93,17 @@ function RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
 
     if refreshAll then
       for _, chatFrame2 in ipairs(NS.GetActiveChatFrames()) do
-        self:EnsureAddMsgHookForFrame(chatFrame2)
-        self:Emit("CHAT_FRAME_READY", chatFrame2, frameReasons[chatFrame2] or layoutReason)
+        -- CLOSE is terminal for this flush. Native frame pools can still report
+        -- a just-closed slot as active until a later update; do not recreate
+        -- addon state on that same lifecycle generation.
+        if not closedFrames[chatFrame2] then
+          self:EnsureAddMsgHookForFrame(chatFrame2)
+          self:Emit("CHAT_FRAME_READY", chatFrame2, frameReasons[chatFrame2] or layoutReason)
+        end
       end
     else
       for chatFrame2, frameReason in pairs(frameReasons) do
-        if NS.IsActiveChatFrame(chatFrame2) then
+        if not closedFrames[chatFrame2] and NS.IsActiveChatFrame(chatFrame2) then
           self:EnsureAddMsgHookForFrame(chatFrame2)
           self:Emit("CHAT_FRAME_READY", chatFrame2, frameReason)
         end
