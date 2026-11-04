@@ -215,31 +215,63 @@ local function CanFade(frame)
   return NS.CanAccessObject(frame)
 end
 
+local function GetFrameMethod(frame, methodName)
+  local ok, method = pcall(function() return frame[methodName] end)
+  if not ok or not NS.CanAccessValue(method) or type(method) ~= "function" then return nil end
+  return method
+end
+
+local function ReadAlpha(frame)
+  if not CanFade(frame) then return nil end
+  local method = GetFrameMethod(frame, "GetAlpha")
+  if not method then return nil end
+  local ok, alpha = pcall(method, frame)
+  return ok and NS.SafeNumber(alpha) or nil
+end
+
+local function WriteAlpha(frame, alpha)
+  if not CanFade(frame) then return false end
+  local method = GetFrameMethod(frame, "SetAlpha")
+  if not method then return false end
+  return pcall(method, frame, alpha)
+end
+
 local function StopIdleFader()
   if not next(fadeObjects) then fadeUpdater:SetScript("OnUpdate", nil) end
 end
 
 local function FadeOnUpdate(_, elapsed)
+  elapsed = NS.SafeNumber(elapsed)
+  if not elapsed or elapsed < 0 then return end
+
   local completed
   for frame, data in pairs(fadeObjects) do
     if not CanFade(frame) then
       fadeObjects[frame] = nil
     else
       data.timer = data.timer + elapsed
-      if data.timer >= data.duration then
-        frame:SetAlpha(data.target)
+      local done = data.timer >= data.duration
+      local alpha
+      if done then
+        alpha = data.target
+      else
+        local progress = data.timer / data.duration - 1
+        alpha = NS.Clamp(data.initial + (data.target - data.initial) * (progress ^ 3 + 1), 0, 1)
+      end
+
+      if not WriteAlpha(frame, alpha) then
+        if fadeObjects[frame] == data then fadeObjects[frame] = nil end
+      elseif done then
         if data.callback then
           completed = completed or {}
           completed[#completed + 1] = { frame, data }
         elseif fadeObjects[frame] == data then
           fadeObjects[frame] = nil
         end
-      else
-        local progress = data.timer / data.duration - 1
-        frame:SetAlpha(NS.Clamp(data.initial + (data.target - data.initial) * (progress ^ 3 + 1), 0, 1))
       end
     end
   end
+
   -- Keep completion identity until dispatch so an earlier callback can cancel
   -- or replace a later completion from this same update.
   if completed then
@@ -258,7 +290,7 @@ function NS.StopFading(frame, alpha)
   if not NS.CanAccessValue(frame) or frame == nil then return end
   fadeObjects[frame] = nil
   alpha = NS.SafeNumber(alpha)
-  if alpha ~= nil and CanFade(frame) then frame:SetAlpha(NS.Clamp(alpha, 0, 1)) end
+  if alpha ~= nil then WriteAlpha(frame, NS.Clamp(alpha, 0, 1)) end
   StopIdleFader()
 end
 
@@ -279,23 +311,36 @@ function NS.StopOwnedFade(frame, owner)
 end
 
 function NS.FadeTo(frame, target, duration, callback, owner)
-  if not CanFade(frame) or (owner ~= nil and not NS.CanAccessValue(owner)) then return end
-  target = NS.Clamp(NS.SafeNumber(target, 1), 0, 1)
-  duration = math.max(0, NS.SafeNumber(duration, 0.35))
-  local current = NS.SafeNumber(frame:GetAlpha())
-  if current == nil then NS.StopFading(frame); return end
+  if not CanFade(frame) or not NS.CanAccessAllValues(target, duration, callback, owner)
+    or (callback ~= nil and type(callback) ~= "function")
+  then
+    return false
+  end
+
+  target = NS.SafeNumber(target)
+  duration = NS.SafeNumber(duration)
+  if target == nil or duration == nil then return false end
+  target = NS.Clamp(target, 0, 1)
+  duration = math.max(0, duration)
+
+  local current = ReadAlpha(frame)
+  if current == nil then NS.StopFading(frame); return false end
 
   if duration == 0 or math.abs(current - target) < 0.01 then
     NS.StopFading(frame)
-    frame:SetAlpha(target)
+    if not WriteAlpha(frame, target) then return false end
     if callback then NS.SafeCall("RothChat:FadeComplete", callback, frame) end
-    return
+    return true
   end
+
   local previous = fadeObjects[frame]
-  if previous and previous.target == target and previous.owner == owner then
+  if previous and previous.target == target and previous.owner == owner
+    and previous.duration == duration
+  then
     previous.callback = callback
-    return
+    return true
   end
+
   fadeObjects[frame] = {
     timer = 0,
     initial = current,
@@ -305,4 +350,5 @@ function NS.FadeTo(frame, target, duration, callback, owner)
     owner = owner,
   }
   if not fadeUpdater:GetScript("OnUpdate") then fadeUpdater:SetScript("OnUpdate", FadeOnUpdate) end
+  return true
 end
