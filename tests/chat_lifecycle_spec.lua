@@ -41,6 +41,24 @@ assert(env.hooks.FCF_Close == closeHook, "hooks must be installed only once")
 assert(deniedAttempts == 1, "a denied permanent hook must not be retried")
 hooksecurefunc = nativeHooksecurefunc
 
+-- Lifecycle identity, reasons and frame keys must be ordinary before they can
+-- enter retained queue tables.
+local initialRevision = core:GetChatLayoutRevision()
+assert(not core:QueueChatLifecycleRefresh(env.inaccessible, "opaque_frame"))
+assert(not core:QueueChatLifecycleRefresh(nil, env.inaccessible))
+assert(not core:QueueChatLifecycleRefresh(nil, 42))
+assert(not core:QueueChatLifecycleClose(env.inaccessible, "opaque_close"))
+assert(core:GetChatLayoutRevision() == initialRevision)
+
+-- A scheduler refusal must not leave queue.queued wedged forever.
+local runNextFrame = env.ns.RunNextFrame
+env.ns.RunNextFrame = function() return false end
+assert(not core:QueueChatLifecycleRefresh(nil, "scheduler_rejected"))
+local queue = core._chatLifecycleQueue
+assert(not queue.queued and not queue.refreshAll and queue.layoutReason == nil)
+assert(next(queue.frameReasons) == nil and next(queue.closedFrames) == nil)
+env.ns.RunNextFrame = runNextFrame
+
 core:QueueChatLifecycleRefresh(nil, "initial")
 core:QueueChatLifecycleRefresh(env.frame, "again")
 assert(#emitted == 0)
@@ -103,6 +121,29 @@ for _, entry in ipairs(emitted) do
   if entry[1] == "CHAT_FRAME_READY" and entry[2] == env.frame then reopened = true end
 end
 assert(reopened, "a later native generation may announce the active slot again")
+
+-- Permanent post-hooks still run while the addon is disabled or messaging is
+-- restricted. Their evidence must be dropped immediately, not replayed after
+-- the gate opens again.
+emitted = {}
+core._addonEnabled = false
+closeHook(env.frame)
+assert(not queue.queued and next(queue.closedFrames) == nil)
+core._addonEnabled = true
+core:QueueChatLifecycleRefresh(nil, "after_enable")
+env:Advance()
+assert(#emitted == 2)
+for _, entry in ipairs(emitted) do assert(entry[1] ~= "CHAT_FRAME_CLOSED") end
+
+emitted = {}
+env.restricted = true
+closeHook(env.frame)
+assert(not queue.queued and next(queue.closedFrames) == nil)
+env.restricted = false
+core:QueueChatLifecycleRefresh(nil, "after_restriction")
+env:Advance()
+assert(#emitted == 2)
+for _, entry in ipairs(emitted) do assert(entry[1] ~= "CHAT_FRAME_CLOSED") end
 
 emitted = {}
 env:Event("UPDATE_CHAT_WINDOWS")
