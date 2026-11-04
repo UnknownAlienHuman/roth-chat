@@ -126,7 +126,21 @@ assert(reversed and reverse.alpha == 1)
 env:Advance(1)
 assert(reverse.alpha == 0, "completion cleanup must preserve the replacement fade")
 
--- Combat jobs retain one current request per key and preserve nil arity.
+-- Combat jobs retain one current ordinary request per key and preserve nil
+-- arity. Inaccessible keys, callbacks and arguments never enter retained state.
+local inaccessibleCallback = function() error("opaque callback ran") end
+local originalCanAccessValue = canaccessvalue
+canaccessvalue = function(value)
+  if value == inaccessibleCallback then return false end
+  return originalCanAccessValue(value)
+end
+assert(not core:DeferKeyed(env.inaccessible, function() error("opaque key ran") end))
+assert(not core:DeferKeyed("opaque-callback", inaccessibleCallback))
+assert(not core:DeferKeyed("opaque-arg", function() error("opaque arg ran") end, env.inaccessible))
+assert(not core:CancelDeferred(env.inaccessible))
+assert(core._deferredCount == 0 and #core._deferred == 0)
+canaccessvalue = originalCanAccessValue
+
 local applied
 for index = 1, 1000 do
   assert(core:DeferKeyed("layout", function(...) applied = NS.Pack(...) end, index, nil))
@@ -139,7 +153,8 @@ env.combat = false
 core:RunDeferred()
 assert(applied.n == 2 and applied[1] == 1000 and core._deferredCount == 0)
 core:DeferKeyed("cancelled", function() error("cancelled job ran") end)
-core:CancelDeferred("cancelled")
+assert(core:CancelDeferred("cancelled"))
+assert(not core:CancelDeferred("cancelled"))
 core:RunDeferred()
 assert(core._deferredCount == 0 and #core._deferred == 0)
 
