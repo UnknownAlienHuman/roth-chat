@@ -124,6 +124,7 @@ local NS = {
     if callback then callback(frame) end
   end,
   StopFading = function(frame) fadeOwners[frame] = nil end,
+  IsFading = function(frame) return fadeOwners[frame] ~= nil end,
   StopOwnedFade = function(frame, owner)
     if fadeOwners[frame] ~= owner then return false end
     fadeOwners[frame] = nil
@@ -278,8 +279,26 @@ assert(primary.alpha == 0.42 and primary.mouseEnabled == true,
 assert(secondary.alpha == 0.35 and secondary.mouseEnabled == false)
 assert(addMessageHook == nil)
 
+-- A replacement fade owned by another subsystem must survive Ticker teardown,
+-- even when it begins at the last alpha written by Ticker.
+activeModules.Ticker = true
+values.immersionFadeInDuration = 1
+values.immersionFadeOutDuration = 1
+module:OnEnable(core)
+local foreignOwner = {}
+NS.FadeTo(primary, 0.9, 1, nil, foreignOwner)
+assert(fadeOwners[primary] == foreignOwner)
+local foreignAlpha = primary.alpha
+activeModules.Ticker = false
+module:OnDisable(core)
+assert(fadeOwners[primary] == foreignOwner and primary.alpha == foreignAlpha,
+  "Ticker teardown must not cancel or overwrite a replacement foreign fade")
+fadeOwners[primary] = nil
+
 -- An in-flight fade still owned by Ticker is cancelled and the exact snapshot
 -- is restored, including a non-default alpha and mouse state.
+primary.alpha = 0.42
+primary.mouseEnabled = true
 activeModules.Ticker = true
 values.immersionFadeInDuration = 1
 values.immersionFadeOutDuration = 1
