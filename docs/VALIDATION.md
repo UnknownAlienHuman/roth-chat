@@ -53,6 +53,32 @@ Tree `80ad1af55e610e2cab42110060e960c60ef8f0cc` passed the complete automated ga
 
 Both runs reported addon `1.2.0`, Interface `120105`, 27 load entries, unique shared owners, 51 parsed Lua files and all 24 discovered contract specs passing on both Lua 5.1 and Lua 5.4. The tree identities are equal; the merge endpoint failure did not change the reviewed content.
 
+### KB and in-house cross-repository pass — 2026-11-04
+
+The task-relevant engineering KB routes and current in-house donor implementations were reviewed before changing code. Exact pins and adoption/rejection decisions are recorded in [the in-house addon review](../RESEARCH_IN_HOUSE_ADDONS_2026_11_04.md).
+
+Tree `93efec74db855d1b177f576bf725e4ff2c0b679d` passed the complete automated gate twice:
+
+- pull-request run `41870467589` for head `5d8bd42c95abba3ce68bb9550cdea106bd52043a`;
+- `main` push run `41871376452` for merge commit `98a671173f6a127f04d10730989a85d7af3d8e98`.
+
+Both runs reported addon `1.2.0`, Interface `120105`, 27 load entries, unique shared owners, 52 parsed Lua files and all 25 discovered contract specs passing on both Lua 5.1 and Lua 5.4.
+
+This pass covered fail-closed table/object access, atomic snapshot copying, ordinary scheduler identity, inaccessible chat-frame rejection, and per-registration `AddMessage` observer diagnostics. Raw callback errors and chat content remain outside retained diagnostics.
+
+### Settings load-order pass — 2026-11-04
+
+The first draft was correctly rejected by run `41871824330` because it introduced a second `InitOptions` implementation owner. The implementation was then changed rather than weakening the ownership validator.
+
+Final tree `1881a5bf8c7aa19aa644f48adb69f060dc972b5b` passed the complete automated gate twice:
+
+- pull-request run `41872164146` for head `8b01a54fe80b9f3b4b5657b0d3dd5b68ae03daab`;
+- `main` push run `41872608705` for merge commit `fa853d7210947f2035933196983fef374c8df390`.
+
+Both successful runs reported addon `1.2.0`, Interface `120105`, 28 load entries, unique shared owners, 54 parsed Lua files and all 26 discovered contract specs passing on both Lua 5.1 and Lua 5.4.
+
+`Options.lua` remains the sole category/control owner. `OptionsBootstrap.lua` owns only a bounded late-load handshake for `Blizzard_Settings`; it prefers `EventUtil.ContinueOnAddOnLoaded`, retires its fallback `ADDON_LOADED` listener after registration, and does not force Settings to load during normal login.
+
 Do not inherit a PASS from an earlier tree after production or test files change. Record the exact candidate commit and workflow run before release.
 
 ## Live-client gate
@@ -72,8 +98,9 @@ Test the exact release candidate on Retail `12.1.5.70688` and record date, addon
 9. Combat entry/exit during Settings, Style, Dock, Resize, Controls, CopyOverlay and Ticker transitions; at most one current deferred continuation per owner/action.
 10. Ticker with Controls and CopyOverlay across primary-frame changes, dock/undock and non-default pre-existing alpha/mouse state. Later foreign changes and replacement fades must survive Ticker teardown.
 11. Alerts on inactive docked tabs: ordinary messages request one native flash; whisper and Battle.net whisper do not receive a duplicate flash or sound; disabling Alerts leaves Blizzard-owned flash state intact.
-12. Minimal, Obsidian and Ember presets; font/size choices; Cleaner locale behavior; URL handling; sticky channels; resize reset and scroll behavior.
-13. No repeating taint, secret-value, forbidden-operation or Lua errors.
+12. Blizzard Settings loading after login and repeated category registration attempts; exactly one Roth Chat category appears without forcing Settings during normal login.
+13. Minimal, Obsidian and Ember presets; font/size choices; Cleaner locale behavior; URL handling; sticky channels; resize reset and scroll behavior.
+14. No repeating taint, secret-value, forbidden-operation or Lua errors.
 
 Record failures with exact reproduction steps. Do not mark this gate passed from source inspection, mocks or Actions.
 
