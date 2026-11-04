@@ -16,6 +16,8 @@ local M = {
 
 local state = { perChat = {} }
 local wheelSnapshots = setmetatable({}, { __mode = "k" })
+local presentationSnapshots = setmetatable({}, { __mode = "k" })
+local ALPHA_EPSILON = 0.01
 local controlsActive = false
 local lifecycleListenersRegistered = false
 M.__applyDeferredKey = {}
@@ -32,6 +34,77 @@ end
 
 local function CanUseObject(object)
   return object ~= nil and NS.CanAccessObject(object)
+end
+
+local function GetAlpha(frame)
+  if not CanUseObject(frame) then return nil end
+  local ok, method = pcall(function() return frame.GetAlpha end)
+  if not ok or not NS.CanAccessValue(method) or type(method) ~= "function" then return nil end
+  local read, alpha = pcall(method, frame)
+  return read and NS.SafeNumber(alpha) or nil
+end
+
+local function GetMouseEnabled(frame)
+  if not CanUseObject(frame) then return nil end
+  local ok, method = pcall(function() return frame.IsMouseEnabled end)
+  if not ok or not NS.CanAccessValue(method) or type(method) ~= "function" then return nil end
+  local read, enabled = pcall(method, frame)
+  if not read or not NS.CanAccessValue(enabled) then return nil end
+  return enabled and true or false
+end
+
+local function CapturePresentationOwnership(frame)
+  if not CanUseObject(frame) or presentationSnapshots[frame] then return end
+  presentationSnapshots[frame] = {
+    alpha = GetAlpha(frame),
+    mouseEnabled = GetMouseEnabled(frame),
+  }
+end
+
+local function SetOwnedAlpha(frame, target, duration)
+  if not CanUseObject(frame) then return false end
+  CapturePresentationOwnership(frame)
+  local snapshot = presentationSnapshots[frame]
+  if not snapshot then return false end
+  if not NS.FadeTo(frame, target, duration, nil, M) then return false end
+  snapshot.lastAlphaWrite = target
+  return true
+end
+
+local function SetOwnedMouse(frame, enabled)
+  if not CanUseObject(frame) then return false end
+  CapturePresentationOwnership(frame)
+  local snapshot = presentationSnapshots[frame]
+  if not snapshot then return false end
+  local ok = pcall(function() frame:EnableMouse(enabled) end)
+  if not ok then return false end
+  snapshot.lastMouseWrite = enabled and true or false
+  return true
+end
+
+local function RestorePresentationOwnership(frame)
+  local snapshot = frame and presentationSnapshots[frame]
+  if not snapshot then return false end
+  presentationSnapshots[frame] = nil
+  if not CanUseObject(frame) then return false end
+
+  local hadActiveFade = type(NS.IsFading) == "function" and NS.IsFading(frame) or false
+  local ownsActiveFade = type(NS.StopOwnedFade) == "function" and NS.StopOwnedFade(frame, M) or false
+  local currentAlpha = GetAlpha(frame)
+  local alphaStillOwned = ownsActiveFade
+    or (not hadActiveFade and type(snapshot.lastAlphaWrite) == "number" and type(currentAlpha) == "number"
+      and math.abs(currentAlpha - snapshot.lastAlphaWrite) < ALPHA_EPSILON)
+  if alphaStillOwned and type(snapshot.alpha) == "number" then
+    pcall(function() frame:SetAlpha(snapshot.alpha) end)
+  end
+
+  local currentMouse = GetMouseEnabled(frame)
+  if snapshot.mouseEnabled ~= nil and snapshot.lastMouseWrite ~= nil
+    and currentMouse == snapshot.lastMouseWrite
+  then
+    pcall(function() frame:EnableMouse(snapshot.mouseEnabled) end)
+  end
+  return true
 end
 
 local function CaptureWheelOwnership(chatFrame)
@@ -129,15 +202,6 @@ end
 local function RemoveFrame(list, frame)
   for i = #list, 1, -1 do
     if list[i] == frame then table.remove(list, i) end
-  end
-end
-
-local function SetFrameMouseForVisibility(frame, visible)
-  if not CanUseObject(frame) or not frame.EnableMouse then return end
-  if frame.__rothKeepMouseEnabled then
-    frame:EnableMouse(true)
-  else
-    frame:EnableMouse(visible)
   end
 end
 
@@ -264,6 +328,7 @@ local function CreateHotspot(core, cf)
 end
 
 local function SetControlsVisible(core, cf, visible)
+  if not ControlsEnabled() then return end
   local st = GetOrCreateChatState(cf)
   local shownAlpha = core:Get("hoverAlphaShown") or 1
   local hiddenAlpha = core:Get("hoverAlphaHidden") or 0
@@ -273,22 +338,22 @@ local function SetControlsVisible(core, cf, visible)
   local target = visible and shownAlpha or hiddenAlpha
 
   for _, frame in ipairs(st.frames) do
-    if CanUseObject(frame) and frame.SetAlpha then
+    if CanUseObject(frame) then
       if frame.__rothKeepMouseEnabled then
-        frame:SetAlpha(1)
-        SetFrameMouseForVisibility(frame, true)
+        SetOwnedAlpha(frame, 1, 0)
+        SetOwnedMouse(frame, true)
       else
-        NS.FadeTo(frame, target, duration)
-        SetFrameMouseForVisibility(frame, visible)
+        SetOwnedAlpha(frame, target, duration)
+        SetOwnedMouse(frame, visible)
       end
     end
   end
 
-  if CanUseObject(st.button) and st.button.SetAlpha then
+  if CanUseObject(st.button) then
     local showPin = visible and ControlsEnabled()
     local buttonTarget = showPin and 1 or 0
-    NS.FadeTo(st.button, buttonTarget, duration)
-    if st.button.EnableMouse then st.button:EnableMouse(buttonTarget > 0) end
+    NS.FadeTo(st.button, buttonTarget, duration, nil, M)
+    pcall(function() st.button:EnableMouse(buttonTarget > 0) end)
   end
 end
 
@@ -301,6 +366,7 @@ local function ShouldShow(core, cf)
 end
 
 UpdateForChat = function(core, cf)
+  if not ControlsEnabled() then return end
   local st = GetOrCreateChatState(cf)
 
   if not IsInteractableChatFrame(cf) then
@@ -333,12 +399,6 @@ UpdateForChat = function(core, cf)
   end
 
   if CanUseObject(st.hotspot) then st.hotspot:Show() end
-
-  if not ControlsEnabled() then
-    SetControlsVisible(core, cf, true)
-    if CanUseObject(st.hotspot) then st.hotspot:EnableMouse(false) end
-    return
-  end
 
   local visible = ShouldShow(core, cf)
   SetControlsVisible(core, cf, visible)
@@ -625,7 +685,10 @@ UnregisterHoverFrame = function(core, cf, frame)
     RequestHotspotBoundsUpdate(core, cf)
     UpdateForChat(core, cf)
   end
-  if frame.__rothHoverChats then frame.__rothHoverChats[cf] = nil end
+  if frame.__rothHoverChats then
+    frame.__rothHoverChats[cf] = nil
+    if not next(frame.__rothHoverChats) then RestorePresentationOwnership(frame) end
+  end
 end
 
 local function RegisterDefaultBlizzardFrames(core, cf)
@@ -817,9 +880,6 @@ function M:OnEnable(core)
   end
 end
 
-function M:OnLogin(core)
-end
-
 function M:OnDisable(core)
   controlsActive = false
   lifecycleListenersRegistered = false
@@ -831,6 +891,7 @@ function M:OnDisable(core)
 
   local function RestoreControlsState()
     if controlsActive then return end
+    local restored = setmetatable({}, { __mode = "k" })
     for cf, st in pairs(state.perChat) do
       ResetTransientState(st)
       st.hovering = false
@@ -839,8 +900,15 @@ function M:OnDisable(core)
       ResetSmoothScroll(cf)
       RestoreWheelOwnership(cf)
 
-      SetControlsVisible(core, cf, true)
+      for _, frame in ipairs(st.frames) do
+        if not restored[frame] then
+          restored[frame] = true
+          RestorePresentationOwnership(frame)
+        end
+      end
+
       if CanUseObject(st.button) then
+        NS.StopFading(st.button)
         st.button:EnableMouse(false)
         st.button:SetAlpha(0)
       end

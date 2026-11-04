@@ -1,6 +1,5 @@
--- Controls owns the chat-frame wheel script while enabled, then restores the
--- prior script, wheel enablement and clipping state without building a second
--- smooth-scroll driver on re-enable.
+-- Controls owns wheel, clipping, accessory alpha and accessory mouse state
+-- while active, then restores only properties that still carry its writes.
 local unpackValues = unpack or table.unpack
 local inCombat = false
 _G.InCombatLockdown = function() return inCombat end
@@ -71,7 +70,10 @@ local chatFrame = newFrame("ChatFrame1")
 chatFrame.scripts.OnMouseWheel = originalWheel
 chatFrame.FontStringContainer = newFrame("FontStringContainer")
 _G.ChatFrame1 = chatFrame
-_G.ChatFrame1ButtonFrame = newFrame("ChatFrame1ButtonFrame")
+local buttonFrame = newFrame("ChatFrame1ButtonFrame")
+buttonFrame.alpha = 0.35
+buttonFrame.mouseEnabled = false
+_G.ChatFrame1ButtonFrame = buttonFrame
 function _G.ChatFrame1ButtonFrame:GetName() return "ChatFrame1ButtonFrame" end
 
 _G.CreateFrame = function(kind, name, parent)
@@ -118,18 +120,39 @@ local RothChat = {
   RegisterModule = function(self, module) self.modules[module.name] = module end,
 }
 _G.RothChat = RothChat
+local fadeOwners = setmetatable({}, { __mode = "k" })
 local NS = {
   CanAccessObject = function(object) return object ~= nil end,
   CanAccessValue = function() return true end,
+  SafeNumber = function(value, fallback)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+      and value or fallback
+  end,
   GetChatFrames = function() return { chatFrame } end,
   GetActiveChatFrames = function() return { chatFrame } end,
   IsDockedChatFrame = function() return false end,
   GetSelectedDockChatFrame = function() return chatFrame end,
-  RunNextFrame = function(_, callback) callback() end,
-  Schedule = function() end,
+  RunNextFrame = function(_, callback) callback(); return true end,
+  Schedule = function() return true end,
   CancelScheduled = function() end,
   Clamp = function(value, minimum, maximum) return math.max(minimum, math.min(maximum, value)) end,
-  FadeTo = function(frame, alpha) frame:SetAlpha(alpha) end,
+  FadeTo = function(frame, alpha, duration, callback, owner)
+    frame:SetAlpha(alpha)
+    fadeOwners[frame] = duration and duration > 0 and { owner = owner } or nil
+    if callback and (not duration or duration == 0) then callback(frame) end
+    return true
+  end,
+  IsFading = function(frame) return fadeOwners[frame] ~= nil end,
+  StopOwnedFade = function(frame, owner)
+    local fade = fadeOwners[frame]
+    if not fade or fade.owner ~= owner then return false end
+    fadeOwners[frame] = nil
+    return true
+  end,
+  StopFading = function(frame, alpha)
+    fadeOwners[frame] = nil
+    if type(alpha) == "number" then frame:SetAlpha(alpha) end
+  end,
   ApplyGlassBackdrop = function(frame) frame.glass = true end,
   CreateHighlight = function(frame) frame.highlight = true end,
   ICONS_TEXTURE = "icons",
@@ -141,6 +164,8 @@ local controls = RothChat.modules.Controls
 controls:OnEnable(core)
 assert(type(chatFrame.scripts.OnMouseWheel) == "function" and chatFrame.scripts.OnMouseWheel ~= originalWheel)
 assert(chatFrame.mouseWheelEnabled and chatFrame.clipsChildren)
+assert(buttonFrame.alpha == 0 and buttonFrame.mouseEnabled == false)
+assert(fadeOwners[buttonFrame] and fadeOwners[buttonFrame].owner == controls)
 local ownedHandler = chatFrame.scripts.OnMouseWheel
 local scrollDriver = chatFrame.__rothSmoothScroll
 local frameCountAfterEnable = _G.CreateFrameCalls
@@ -159,6 +184,9 @@ end
 assert(chatFrame.scripts.OnMouseWheel == originalWheel)
 assert(chatFrame.mouseWheelEnabled == false and chatFrame.clipsChildren == false)
 assert(chatFrame.__rothSmoothScroll == scrollDriver)
+assert(buttonFrame.alpha == 0.35 and buttonFrame.mouseEnabled == false,
+  "disable must restore the exact pre-Controls presentation snapshot")
+assert(fadeOwners[buttonFrame] == nil)
 
 -- The retained guarded handler must not create new frames or replace a later
 -- owner's script during disable cleanup.
@@ -203,6 +231,30 @@ assert(chatFrame.scripts.OnMouseWheel == ownedHandler)
 assert(chatFrame.__rothSmoothScroll == scrollDriver)
 assert(_G.CreateFrameCalls == frameCountAfterEnable)
 
+-- Later direct presentation writes win over Controls teardown.
+fadeOwners[buttonFrame] = nil -- model completion of Controls' last fade
+buttonFrame.alpha = 0.42
+buttonFrame.mouseEnabled = true
+active = false
+controls:OnDisable(core)
+assert(buttonFrame.alpha == 0.42 and buttonFrame.mouseEnabled == true,
+  "foreign direct alpha/mouse changes must survive Controls teardown")
+
+-- A later replacement fade also wins and must remain active.
+active = true
+controls:OnEnable(core)
+local foreignOwner = {}
+NS.FadeTo(buttonFrame, 0.9, 1, nil, foreignOwner)
+active = false
+controls:OnDisable(core)
+assert(buttonFrame.alpha == 0.9)
+assert(fadeOwners[buttonFrame] and fadeOwners[buttonFrame].owner == foreignOwner,
+  "Controls teardown must not cancel a replacement foreign fade")
+fadeOwners[buttonFrame] = nil
+
+-- Wheel/clipping restoration remains conflict-safe as well.
+active = true
+controls:OnEnable(core)
 local foreignWheelCalls = 0
 local function foreignWheel() foreignWheelCalls = foreignWheelCalls + 1 end
 chatFrame:SetScript("OnMouseWheel", foreignWheel)

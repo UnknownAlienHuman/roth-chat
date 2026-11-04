@@ -55,6 +55,43 @@ env:Advance(1)
 assert(rawequal(env.frame.alpha, env.inaccessible), "opaque alpha must not be read or replaced")
 env.frame.alpha = 1
 
+-- Fade inputs and retained callbacks/owners must already be ordinary.
+env.frame.alpha = 0.25
+assert(not NS.FadeTo(env.frame, env.inaccessible, 1))
+assert(not NS.FadeTo(env.frame, 1, env.inaccessible))
+assert(not NS.FadeTo(env.frame, 1, 1, env.inaccessible))
+assert(not NS.FadeTo(env.frame, 1, 1, nil, env.inaccessible))
+assert(env.frame.alpha == 0.25 and not NS.IsFading(env.frame))
+
+-- Method lookup/invocation failure is isolated per frame and cannot stop a
+-- different valid fade sharing the updater.
+local badGet = CreateFrame("Frame")
+badGet.alpha = 0
+function badGet:GetAlpha() error("denied alpha read") end
+assert(not NS.FadeTo(badGet, 1, 1))
+
+local badSet = CreateFrame("Frame")
+badSet.alpha = 0
+function badSet:SetAlpha() error("denied alpha write") end
+local good = CreateFrame("Frame")
+good.alpha = 0
+assert(NS.FadeTo(badSet, 1, 1))
+assert(NS.FadeTo(good, 1, 1))
+env:Advance(1)
+assert(good.alpha == 1 and not NS.IsFading(good))
+assert(not NS.IsFading(badSet), "a failing frame must be retired without poisoning the updater")
+
+-- A same-owner request with a different duration is a replacement, not stale
+-- callback coalescing with the old timing contract.
+local durationOwner = {}
+env.frame.alpha = 0
+assert(NS.FadeTo(env.frame, 1, 10, nil, durationOwner))
+env:Advance(1)
+assert(env.frame.alpha > 0 and env.frame.alpha < 1)
+assert(NS.FadeTo(env.frame, 1, 1, nil, durationOwner))
+env:Advance(1)
+assert(env.frame.alpha == 1 and not NS.IsFading(env.frame))
+
 -- A completion queued in the same update remains cancellable by another one.
 local fadeA, fadeB, completions = CreateFrame("Frame"), CreateFrame("Frame"), 0
 fadeA.alpha, fadeB.alpha = 0, 0
@@ -89,7 +126,21 @@ assert(reversed and reverse.alpha == 1)
 env:Advance(1)
 assert(reverse.alpha == 0, "completion cleanup must preserve the replacement fade")
 
--- Combat jobs retain one current request per key and preserve nil arity.
+-- Combat jobs retain one current ordinary request per key and preserve nil
+-- arity. Inaccessible keys, callbacks and arguments never enter retained state.
+local inaccessibleCallback = function() error("opaque callback ran") end
+local originalCanAccessValue = canaccessvalue
+canaccessvalue = function(value)
+  if value == inaccessibleCallback then return false end
+  return originalCanAccessValue(value)
+end
+assert(not core:DeferKeyed(env.inaccessible, function() error("opaque key ran") end))
+assert(not core:DeferKeyed("opaque-callback", inaccessibleCallback))
+assert(not core:DeferKeyed("opaque-arg", function() error("opaque arg ran") end, env.inaccessible))
+assert(not core:CancelDeferred(env.inaccessible))
+assert(core._deferredCount == 0 and #core._deferred == 0)
+canaccessvalue = originalCanAccessValue
+
 local applied
 for index = 1, 1000 do
   assert(core:DeferKeyed("layout", function(...) applied = NS.Pack(...) end, index, nil))
@@ -102,7 +153,8 @@ env.combat = false
 core:RunDeferred()
 assert(applied.n == 2 and applied[1] == 1000 and core._deferredCount == 0)
 core:DeferKeyed("cancelled", function() error("cancelled job ran") end)
-core:CancelDeferred("cancelled")
+assert(core:CancelDeferred("cancelled"))
+assert(not core:CancelDeferred("cancelled"))
 core:RunDeferred()
 assert(core._deferredCount == 0 and #core._deferred == 0)
 
