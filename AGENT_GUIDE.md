@@ -56,7 +56,7 @@ return false, replacement -- replace visible arg1; Core rebuilds the received tu
 
 Core gates the whole synchronous filter tuple before dispatch, preserves the exact received arity and `nil` positions, and returns the tuple only when visible text changes. Never assume a fixed 14- or 19-argument signature. Module filters may affect visible `arg1`; they do not own opaque sender, routing, line-ID, access-ID, or trailing fields. Filters may be skipped by Blizzard and must not act as guaranteed logs.
 
-Displayed-message callbacks receive only the chat frame, accessible string, and safe RGB values. Unknown trailing AddMessage metadata is discarded. Callbacks must remain optional and should not retain whole tuples.
+Displayed-message callbacks receive only the chat frame, accessible string, and safe RGB values. Unknown trailing AddMessage metadata is discarded. Callbacks must remain optional and should not retain whole tuples. One denied `AddMessage` hook attempt is terminal for that frame lifetime; never retry the same forbidden hook on each layout update.
 
 ## Accessibility, lockdown, and retained content
 
@@ -73,13 +73,14 @@ Displayed-message callbacks receive only the chat frame, accessible string, and 
 
 Current appearance presets: **Minimal**, **Obsidian**, and **Ember**. Font and size presets are separate. Keep the configuration model in Core and the UI in `Options.lua`; feature effects belong to the owning module. Preserve all existing module and feature choices across version upgrades.
 
-Controls owns its mouse-wheel wrapper while active and delegates to the captured original while inactive. Controls and Ticker coordinate alpha with CopyOverlay through the visibility event. Restore alone owns its snapshots of Blizzard fade settings. Do not create parallel owners for these behaviors.
+Controls owns its mouse-wheel wrapper while active and delegates to the captured original while inactive. Controls and Ticker coordinate alpha with CopyOverlay through the visibility event. Restore owns only its bounded SavedVariables buckets and one-shot replay state; Blizzard retains `ScrollingMessageFrame` capacity and fade policy. Do not create parallel owners for these behaviors.
 
 ## Performance and validation
 
 - Scheduler/fade update scripts run only while work is pending.
 - Coalesce chat lifecycle/layout updates and combat-deferred work; cancel stale keyed jobs.
-- Keep Restore and Ticker data bounded; do not scan the full database per message.
+- Treat `CHAT_FRAME_CLOSED` as terminal for its current coalesced flush; a later native generation may announce a reused frame as ready.
+- Keep Restore and Ticker data bounded; do not scan the full database per message. Restore replay is capped by the frame's current `GetMaxLines()` and skips malformed/unknown-version rows.
 - Unknown newer persistence schemas remain untouched; suspend their reader/writer until a supported schema is available.
 - Reuse one `AddMessage` hook per frame and one dispatcher per event.
 - Keep error reporting rate-limited and do not include raw callback errors or chat content in diagnostics.

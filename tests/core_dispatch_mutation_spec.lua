@@ -124,4 +124,24 @@ do
   core:UnregisterAddMessageHooks(owner)
 end
 
+-- A denied native AddMessage hook is terminal for that frame lifetime. Native
+-- layout updates must not turn one denied operation into a retry/error loop.
+do
+  local denied = { AddMessage = function() end }
+  local attempts = 0
+  local originalHook = hooksecurefunc
+  hooksecurefunc = function(target, method, callback)
+    if target == denied and method == "AddMessage" then
+      attempts = attempts + 1
+      error("denied")
+    end
+    return originalHook(target, method, callback)
+  end
+  core:EnsureAddMsgHookForFrame(denied)
+  core:EnsureAddMsgHookForFrame(denied)
+  hooksecurefunc = originalHook
+  assert(attempts == 1, "denied AddMessage hooks must not be retried")
+  assert(core._addMsgHooked[denied] == false)
+end
+
 print("core_dispatch_mutation_spec: ok")

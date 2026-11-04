@@ -26,9 +26,9 @@ The validator checks TOC metadata and load ownership, parses Lua files under Lua
 
 `.github/workflows/validate.yml` exposes the same gate through a manual `workflow_dispatch` only. Automatic runs are deliberately disabled on `main`; no GitHub Actions run is claimed here. Do not describe local success as an Actions result. A focused spec run is not a full-suite result.
 
-### Local candidate record — 2026-11-03
+### Base modernization candidate — 2026-11-03
 
-The change set containing this record passed the complete validator using the official Lua 5.1.1 source-built CLI and a host for the installed Lua 5.4.6 library. Both runtimes executed the same parser and discovered-spec checks from `scripts/validate.py`.
+Tree `4b87f5d1d59727ee75be920799e59065e4d9b62f` passed the complete validator using the official Lua 5.1.1 source-built CLI and a host for the installed Lua 5.4.6 library. Both runtimes executed the same parser and discovered-spec checks from `scripts/validate.py`.
 
 | Check | Result |
 |---|---|
@@ -38,9 +38,17 @@ The change set containing this record passed the complete validator using the of
 | Patch whitespace | `git diff --check` passed |
 | Relative documentation links | All targets resolved |
 
-The published PR head identifies the candidate revision. These results establish local syntax and mocked-contract behavior only; the live-client gate below remains open.
+These results establish syntax and mocked-contract behavior for that exact tree only; the live-client gate below remains open.
 
-The follow-up regressions cover current subscription/name invalidation, unknown-newer and inaccessible Restore data, denied native message counts, combat toggle cancellation, foreign UI ownership, ring overflow ordering, Settings proxy refresh, and reentrant fade completion cancellation/replacement. The code removes avoidable allocation and repeated registry compaction; no client CPU/FPS improvement has been measured.
+### Third audit follow-up — 2026-11-03
+
+The lifecycle/Restore/dispatch follow-up was checked locally with Lua 5.3.6 (`texlua`):
+
+- modified production files and replacement specs parsed;
+- focused close-generation, Restore replay/capacity/schema, and denied-hook contracts passed;
+- the repository-form Restore spec passed.
+
+The full Lua 5.1.1 + 5.4.6 validator was **NOT RUN** for this follow-up in the current environment. Do not inherit the base-tree PASS for changed files. The new regressions cover terminal close ordering, native replay capacity, valid-row selection across unknown future rows, removal of Restore frame-property ownership, and terminal denied AddMessage hooks. No client CPU/FPS improvement has been measured.
 
 ## Live-client gate
 
@@ -51,6 +59,9 @@ Before packaging or release, test on Retail `12.1.5.70688` and record the date, 
 - Fresh install, login, `/reload`, logout/login, and upgrade with existing `RothChatDB` values.
 - Existing legacy `RothChatDB.history` and obsolete profile keys remain untouched; no new History table is created. During Restore v1/v2-to-v3 migration, unbound buckets are kept by reference in the bounded `RothChatDB.restore.legacyFrames.frames` snapshot, keyed only by valid permanent slots. This is a manual recovery location: those rows are intentionally never replayed, exported, or appended to live v3 buckets because their original window configuration cannot be proven.
 - Restore fingerprint work is cached only for the current `core:GetChatLayoutRevision(frame)` value; verify direct group/channel mutations and window rename invalidate it before the next message, and that frame close and module disable invalidate it. Incomplete native invalidation hooks disable caching. Current identity accessibility is rechecked; no permission/restriction result is cached.
+- Restore keeps its configured durable retention independently of Blizzard's live buffer, never changes `GetMaxLines()`/fade properties, and replays only the newest valid rows up to the current native capacity. Unknown row versions must be skipped without reducing the number of later valid rows selected where capacity permits.
+- A frame reported active during its close callback receives `CHAT_FRAME_CLOSED` but no same-flush `CHAT_FRAME_READY`; a later native update may announce a reused frame.
+- A denied per-frame `AddMessage` post-hook produces no repeated attempts or error storm during later layout/update events.
 - Downgrade with an unknown newer Restore schema: verify version, buckets, and unknown fields remain unchanged while Restore history read/write/replay stays suspended.
 - Enable/disable/re-enable each feature before and after login; module cleanup and late activation.
 - Native chat input history (`HistoryKeeper`) coexists with Restore; whisper/reply behavior remains Blizzard-owned.

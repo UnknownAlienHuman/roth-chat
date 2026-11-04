@@ -56,13 +56,23 @@ assert(#emitted == 0, "native mutations must share the deferred layout pass")
 env:Advance()
 assert(#emitted == 2)
 
+-- The native fixed pool can still report a just-closed slot as active. CLOSE is
+-- terminal for this flush; READY is allowed only in a later lifecycle generation.
 emitted = {}
-closeHook(env.frame, inactive)
+closeHook(env.frame)
 env:Advance()
-assert(emitted[1][1] == "CHAT_FRAME_CLOSED" and emitted[1][2] == inactive)
+assert(emitted[1][1] == "CHAT_FRAME_CLOSED" and emitted[1][2] == env.frame)
 for _, entry in ipairs(emitted) do
-  assert(not (entry[1] == "CHAT_FRAME_READY" and entry[2] == inactive))
+  assert(not (entry[1] == "CHAT_FRAME_READY" and entry[2] == env.frame))
 end
+emitted = {}
+core:QueueChatLifecycleRefresh(nil, "later_reopen")
+env:Advance()
+local reopened = false
+for _, entry in ipairs(emitted) do
+  if entry[1] == "CHAT_FRAME_READY" and entry[2] == env.frame then reopened = true end
+end
+assert(reopened, "a later native generation may announce the active slot again")
 
 emitted = {}
 env:Event("UPDATE_CHAT_WINDOWS")
