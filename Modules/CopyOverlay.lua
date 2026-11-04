@@ -216,6 +216,7 @@ local function BuildOverlay(core, chatFrame)
     self._prevChatAlpha = GetAlpha(chatFrame)
     self._lastChatAlphaWrite = 0
     core:Emit("COPY_OVERLAY_VISIBILITY", chatFrame, true)
+    if not self:IsShown() or not IsEnabled(core) or IsChatRestricted() then return end
     NS.FadeTo(chatFrame, 0, 0.15, nil, M)
 
     self.__focusScheduleKey = self.__focusScheduleKey or {}
