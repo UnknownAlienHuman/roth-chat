@@ -55,6 +55,43 @@ env:Advance(1)
 assert(rawequal(env.frame.alpha, env.inaccessible), "opaque alpha must not be read or replaced")
 env.frame.alpha = 1
 
+-- Fade inputs and retained callbacks/owners must already be ordinary.
+env.frame.alpha = 0.25
+assert(not NS.FadeTo(env.frame, env.inaccessible, 1))
+assert(not NS.FadeTo(env.frame, 1, env.inaccessible))
+assert(not NS.FadeTo(env.frame, 1, 1, env.inaccessible))
+assert(not NS.FadeTo(env.frame, 1, 1, nil, env.inaccessible))
+assert(env.frame.alpha == 0.25 and not NS.IsFading(env.frame))
+
+-- Method lookup/invocation failure is isolated per frame and cannot stop a
+-- different valid fade sharing the updater.
+local badGet = CreateFrame("Frame")
+badGet.alpha = 0
+function badGet:GetAlpha() error("denied alpha read") end
+assert(not NS.FadeTo(badGet, 1, 1))
+
+local badSet = CreateFrame("Frame")
+badSet.alpha = 0
+function badSet:SetAlpha() error("denied alpha write") end
+local good = CreateFrame("Frame")
+good.alpha = 0
+assert(NS.FadeTo(badSet, 1, 1))
+assert(NS.FadeTo(good, 1, 1))
+env:Advance(1)
+assert(good.alpha == 1 and not NS.IsFading(good))
+assert(not NS.IsFading(badSet), "a failing frame must be retired without poisoning the updater")
+
+-- A same-owner request with a different duration is a replacement, not stale
+-- callback coalescing with the old timing contract.
+local durationOwner = {}
+env.frame.alpha = 0
+assert(NS.FadeTo(env.frame, 1, 10, nil, durationOwner))
+env:Advance(1)
+assert(env.frame.alpha > 0 and env.frame.alpha < 1)
+assert(NS.FadeTo(env.frame, 1, 1, nil, durationOwner))
+env:Advance(1)
+assert(env.frame.alpha == 1 and not NS.IsFading(env.frame))
+
 -- A completion queued in the same update remains cancellable by another one.
 local fadeA, fadeB, completions = CreateFrame("Frame"), CreateFrame("Frame"), 0
 fadeA.alpha, fadeB.alpha = 0, 0
