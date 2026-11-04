@@ -84,27 +84,36 @@ local function ResetQueue(queue)
   queue.closedFrames = {}
 end
 
-function RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
-  self._chatLayoutRevision = self._chatLayoutRevision + 1
-  if self._addonLoaded and not self._addonEnabled then return end
-  local queue = self._chatLifecycleQueue
-  reason = reason or "layout"
+local function DropQueue(self)
+  NS.CancelScheduled(self._chatLifecycleScheduleKey)
+  ResetQueue(self._chatLifecycleQueue)
+end
 
-  if chatFrame then
-    queue.frameReasons[chatFrame] = reason
-  else
-    queue.refreshAll = true
+local function CanQueueLifecycle(self)
+  if NS.IsChatMessagingRestricted()
+    or (self._addonLoaded and not self._addonEnabled)
+  then
+    DropQueue(self)
+    return false
   end
+  return true
+end
 
+local function ScheduleLifecycleFlush(self, reason)
+  local queue = self._chatLifecycleQueue
   queue.layoutReason = queue.layoutReason or reason
-  if queue.queued then return end
+  if queue.queued then return true end
   queue.queued = true
 
-  NS.RunNextFrame(self._chatLifecycleScheduleKey, function()
+  local scheduled = NS.RunNextFrame(self._chatLifecycleScheduleKey, function()
     local current = self._chatLifecycleQueue
     if not current.queued then return end
-    if NS.IsChatMessagingRestricted() then ResetQueue(current); return end
-    if self._addonLoaded and not self._addonEnabled then ResetQueue(current); return end
+    if NS.IsChatMessagingRestricted()
+      or (self._addonLoaded and not self._addonEnabled)
+    then
+      ResetQueue(current)
+      return
+    end
 
     local refreshAll = current.refreshAll
     local layoutReason = current.layoutReason or "layout"
@@ -119,32 +128,72 @@ function RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
     self:Emit("CHAT_LAYOUT_CHANGED", layoutReason)
 
     if refreshAll then
-      for _, chatFrame2 in ipairs(NS.GetActiveChatFrames()) do
+      for _, chatFrame in ipairs(NS.GetActiveChatFrames()) do
         -- CLOSE is terminal for this flush. Native frame pools can still report
         -- a just-closed slot as active until a later update; do not recreate
         -- addon state on that same lifecycle generation.
-        if not closedFrames[chatFrame2] then
-          self:EnsureAddMsgHookForFrame(chatFrame2)
-          self:Emit("CHAT_FRAME_READY", chatFrame2, frameReasons[chatFrame2] or layoutReason)
+        if not closedFrames[chatFrame] then
+          self:EnsureAddMsgHookForFrame(chatFrame)
+          self:Emit("CHAT_FRAME_READY", chatFrame, frameReasons[chatFrame] or layoutReason)
         end
       end
     else
-      for chatFrame2, frameReason in pairs(frameReasons) do
-        if not closedFrames[chatFrame2] and NS.IsActiveChatFrame(chatFrame2) then
-          self:EnsureAddMsgHookForFrame(chatFrame2)
-          self:Emit("CHAT_FRAME_READY", chatFrame2, frameReason)
+      for chatFrame, frameReason in pairs(frameReasons) do
+        if not closedFrames[chatFrame] and NS.IsActiveChatFrame(chatFrame) then
+          self:EnsureAddMsgHookForFrame(chatFrame)
+          self:Emit("CHAT_FRAME_READY", chatFrame, frameReason)
         end
       end
     end
   end, "RothChat:ChatLifecycleRefresh")
+
+  if scheduled == false then
+    ResetQueue(queue)
+    return false
+  end
+  return true
+end
+
+function RothChat:QueueChatLifecycleRefresh(chatFrame, reason)
+  if not NS.CanAccessAllValues(chatFrame, reason)
+    or (chatFrame ~= nil and not NS.CanAccessObject(chatFrame))
+    or (reason ~= nil and type(reason) ~= "string")
+  then
+    return false
+  end
+
+  self._chatLayoutRevision = self._chatLayoutRevision + 1
+  if not CanQueueLifecycle(self) then return false end
+
+  local queue = self._chatLifecycleQueue
+  reason = reason or "layout"
+  if chatFrame then
+    queue.frameReasons[chatFrame] = reason
+  else
+    queue.refreshAll = true
+  end
+  return ScheduleLifecycleFlush(self, reason)
 end
 
 function RothChat:QueueChatLifecycleClose(chatFrame, reason)
-  if chatFrame then
-    self._chatLifecycleQueue.closedFrames[chatFrame] = reason or "close"
-    self._chatLifecycleQueue.frameReasons[chatFrame] = nil
+  if not NS.CanAccessAllValues(chatFrame, reason)
+    or (chatFrame ~= nil and not NS.CanAccessObject(chatFrame))
+    or (reason ~= nil and type(reason) ~= "string")
+  then
+    return false
   end
-  self:QueueChatLifecycleRefresh(nil, reason or "close")
+
+  self._chatLayoutRevision = self._chatLayoutRevision + 1
+  if not CanQueueLifecycle(self) then return false end
+
+  local queue = self._chatLifecycleQueue
+  reason = reason or "close"
+  if chatFrame then
+    queue.closedFrames[chatFrame] = reason
+    queue.frameReasons[chatFrame] = nil
+  end
+  queue.refreshAll = true
+  return ScheduleLifecycleFlush(self, reason)
 end
 
 function RothChat:EnsureChatLifecycleHooks()
