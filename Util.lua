@@ -238,8 +238,12 @@ end
 -- Stop a fade only when the caller still owns the active fade record. This is
 -- the teardown primitive for modules that share an alpha surface with another
 -- owner and must not cancel a later replacement fade.
+function NS.IsFading(frame)
+  return CanFade(frame) and fadeObjects[frame] ~= nil
+end
+
 function NS.StopOwnedFade(frame, owner)
-  if not NS.CanAccessAllValues(frame, owner) or frame == nil or owner == nil then return false end
+  if not CanFade(frame) or owner == nil or not NS.CanAccessValue(owner) then return false end
   local data = fadeObjects[frame]
   if not data or data.owner ~= owner then return false end
   fadeObjects[frame] = nil
@@ -248,7 +252,7 @@ function NS.StopOwnedFade(frame, owner)
 end
 
 function NS.FadeTo(frame, target, duration, callback, owner)
-  if not CanFade(frame) then return end
+  if not CanFade(frame) or (owner ~= nil and not NS.CanAccessValue(owner)) then return end
   target = NS.Clamp(NS.SafeNumber(target, 1), 0, 1)
   duration = math.max(0, NS.SafeNumber(duration, 0.35))
   local current = NS.SafeNumber(frame:GetAlpha())

@@ -41,38 +41,46 @@ local NS = {
 
 assert(loadfile("CoreDispatch.lua"))("RothChat", NS)
 local core = _G.RothChat
-local owner = {}
+local ownerA, ownerB = {}, {}
 local opaqueError = setmetatable({}, { __tostring = function() error("must not inspect raw callback failure") end })
-local fail = true
+local failA, failB = true, true
 
-assert(core:RegisterMessageFilter(owner, "CHAT_MSG_SAY", function(_, _, text)
-  if fail then error(opaqueError) end
+assert(core:RegisterMessageFilter(ownerA, "CHAT_MSG_SAY", function(_, _, text)
+  if failA then error(opaqueError) end
   return false, text .. "!"
 end, 10))
+assert(core:RegisterMessageFilter(ownerB, "CHAT_MSG_SAY", function(_, _, text)
+  if failB then error(opaqueError) end
+  return false, text .. "?"
+end, 20))
 
 local dispatcher = assert(registered.CHAT_MSG_SAY)
 for _ = 1, 3 do
   local discard, text, sender = dispatcher(nil, "CHAT_MSG_SAY", "hello", "sender")
   assert(discard == false and text == nil and sender == nil,
-    "a failing callback must degrade to the no-op return contract")
+    "failing callbacks must degrade to the no-op return contract")
 end
-assert(#reports == 1 and reports[1] == "RothChat:MsgFilter:CHAT_MSG_SAY")
+assert(#reports == 2 and reports[1] ~= reports[2],
+  "each failing callback needs an independent ordinary diagnostic key")
+assert(reports[1]:find("#1", 1, true) and reports[2]:find("#2", 1, true))
 
 now = now + 11
 dispatcher(nil, "CHAT_MSG_SAY", "hello", "sender")
-assert(#reports == 2)
-assert(reports[2]:find("2 repeats suppressed", 1, true),
-  "the next bounded report must account for consecutive suppressed failures")
+assert(#reports == 4)
+assert(reports[3]:find("2 repeats suppressed", 1, true)
+  and reports[4]:find("2 repeats suppressed", 1, true))
 
--- One successful callback clears its failure streak; a later failure reports immediately.
-fail = false
+-- One success clears only that callback's failure streak.
+failA, failB = false, false
 local discard, text, sender = dispatcher(nil, "CHAT_MSG_SAY", "hello", "sender")
-assert(discard == false and text == "hello!" and sender == "sender")
-fail = true
+assert(discard == false and text == "hello!?" and sender == "sender")
+failA = true
 now = now + 1
 dispatcher(nil, "CHAT_MSG_SAY", "hello", "sender")
-assert(#reports == 3 and not reports[3]:find("suppressed", 1, true))
+assert(#reports == 5 and reports[5]:find("#1", 1, true)
+  and not reports[5]:find("suppressed", 1, true))
 
-core:UnregisterMessageFilters(owner)
+core:UnregisterMessageFilters(ownerA)
+core:UnregisterMessageFilters(ownerB)
 assert(registered.CHAT_MSG_SAY == nil)
 print("filter_failure_spec: ok")

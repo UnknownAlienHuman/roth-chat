@@ -3,6 +3,7 @@ local _, NS = ...
 local core = _G.RothChat
 
 local FILTER_ERROR_WINDOW = 10
+local nextFilterRegistrationID = 0
 
 local function InsertSorted(entries, entry)
   for index = 1, #entries do
@@ -54,7 +55,8 @@ end
 
 local function AddEntry(state, callback, owner, priority)
   if Find(state, callback, owner) then return end
-  local entry = { callback, owner, NS.SafeNumber(priority, 50) }
+  nextFilterRegistrationID = nextFilterRegistrationID + 1
+  local entry = { callback, owner, NS.SafeNumber(priority, 50), nil, nextFilterRegistrationID }
   if state.depth > 0 then state.pending[#state.pending + 1] = entry
   else InsertSorted(state.entries, entry) end
 end
@@ -73,13 +75,16 @@ local function ReportFilterFailure(event, entry)
     return
   end
 
-  local label = "RothChat:MsgFilter:" .. event
+  local label = "RothChat:MsgFilter:" .. event .. "#" .. tostring(entry[5])
   if failure.suppressed > 0 then
     label = label .. " (" .. failure.suppressed .. " repeats suppressed)"
   end
   failure.lastReport = now
-  failure.suppressed = 0
-  NS.ReportError(label)
+  if NS.ReportError(label) then
+    failure.suppressed = 0
+  else
+    failure.suppressed = failure.suppressed + 1
+  end
 end
 
 core._messageFilterState = {}

@@ -31,7 +31,7 @@ local frame = NewFrame("Target")
 local ownerA, ownerB = {}, {}
 
 NS.FadeTo(frame, 1, 1, nil, ownerA)
-assert(fader:GetScript("OnUpdate"), "an animated fade must start the shared updater")
+assert(NS.IsFading(frame) and fader:GetScript("OnUpdate"), "an animated fade must start the shared updater")
 assert(not NS.StopOwnedFade(frame, ownerB), "a foreign owner must not cancel the fade")
 fader:GetScript("OnUpdate")(fader, 0.5)
 assert(frame.alpha > 0 and frame.alpha < 1)
@@ -40,6 +40,7 @@ assert(frame.alpha > 0 and frame.alpha < 1)
 NS.FadeTo(frame, 1, 1, nil, ownerB)
 assert(not NS.StopOwnedFade(frame, ownerA))
 assert(NS.StopOwnedFade(frame, ownerB))
+assert(not NS.IsFading(frame))
 assert(fader:GetScript("OnUpdate") == nil, "stopping the final owned fade must idle the updater")
 
 -- Immediate writes do not leave a stale ownership record.
