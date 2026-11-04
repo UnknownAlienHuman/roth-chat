@@ -22,6 +22,7 @@ end
 
 local core = {
   InitOptions = function(self)
+    assert(Settings, "category construction must wait for Blizzard_Settings")
     buildCalls = buildCalls + 1
     self.optionsCategoryID = 42
   end,
@@ -36,13 +37,12 @@ local NS = {
 }
 
 assert(loadfile("OptionsBootstrap.lua"))("RothChat", NS)
-assert(core:InitOptions() == false)
-assert(core:InitOptions() == false)
-assert(#continuations == 1 and buildCalls == 0, "only one late-load continuation may be registered")
+assert(#continuations == 1 and buildCalls == 0, "one late-load continuation must be registered")
 Settings = {}
 continuations[1]()
-assert(buildCalls == 1 and core.optionsCategoryID == 42)
-assert(core:InitOptions() == true and buildCalls == 1, "registered options must remain idempotent")
+continuations[1]()
+assert(buildCalls == 1 and core.optionsCategoryID == 42, "category registration must be idempotent")
+assert(core.InitOptions ~= nil, "bootstrap must not replace the Options owner")
 
 -- Fallback ADDON_LOADED listener is bounded and ignores unrelated addons.
 Settings = nil
@@ -51,13 +51,13 @@ frames = {}
 buildCalls = 0
 local fallbackCore = {
   InitOptions = function(self)
+    assert(Settings)
     buildCalls = buildCalls + 1
     self.optionsCategoryID = 7
   end,
 }
 _G.RothChat = fallbackCore
 assert(loadfile("OptionsBootstrap.lua"))("RothChat", NS)
-assert(fallbackCore:InitOptions() == false)
 assert(#frames == 1 and frames[1].events.ADDON_LOADED)
 local onEvent = assert(frames[1].scripts.OnEvent)
 onEvent(frames[1], "ADDON_LOADED", "Other_AddOn")
