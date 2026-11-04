@@ -25,6 +25,27 @@ local subscriptionMethods = {
   "AddChannel", "RemoveChannel", "RemoveAllChannels",
 }
 
+local function ReadField(object, name)
+  return object[name]
+end
+
+local function GetCallableField(object, name)
+  local ok, value = pcall(ReadField, object, name)
+  if not ok or not NS.CanAccessValue(value) or type(value) ~= "function" then return nil end
+  return value
+end
+
+local function InstallGlobalPostHook(name, callback)
+  local ok, target = pcall(ReadField, _G, name)
+  if not ok or not NS.CanAccessValue(target) or type(target) ~= "function" then return false end
+  return NS.SafeCall(
+    "RothChat:ChatLifecycleHook:" .. name,
+    hooksecurefunc,
+    name,
+    callback
+  )
+end
+
 local function OnSubscriptionsChanged(frame)
   if NS.CanAccessObject(frame) then
     RothChat:QueueChatLifecycleRefresh(frame, "subscriptions_changed")
@@ -35,9 +56,15 @@ function RothChat:EnsureChatFrameLifecycleHooks(frame)
   if not NS.CanAccessObject(frame) or frameHooks[frame] ~= nil then return end
   local complete = true
   for _, method in ipairs(subscriptionMethods) do
-    if type(frame[method]) == "function" then
+    if GetCallableField(frame, method) then
       -- One attempt per frame/method; denied hooks are not retried on updates.
-      if not NS.SafeCall("RothChat:ChatSubscriptionHook", hooksecurefunc, frame, method, OnSubscriptionsChanged) then
+      if not NS.SafeCall(
+        "RothChat:ChatSubscriptionHook:" .. method,
+        hooksecurefunc,
+        frame,
+        method,
+        OnSubscriptionsChanged
+      ) then
         complete = false
       end
     else
@@ -122,6 +149,8 @@ end
 
 function RothChat:EnsureChatLifecycleHooks()
   if self._chatLifecycleHooked then return end
+  -- Every supported hook gets one isolated attempt. A denied or drifting entry
+  -- point must not abort installation of the remaining lifecycle evidence.
   self._chatLifecycleHooked = true
 
   local function QueueAll(reason)
@@ -136,67 +165,44 @@ function RothChat:EnsureChatLifecycleHooks()
     end
   end
 
-  if type(_G.FCFDock_SelectWindow) == "function" then
-    hooksecurefunc("FCFDock_SelectWindow", function(_, chatFrame)
-      QueueFrame(chatFrame, "dock_select_window")
-      QueueAll("dock_select_window")
-    end)
-  end
+  InstallGlobalPostHook("FCFDock_SelectWindow", function()
+    QueueAll("dock_select_window")
+  end)
 
-  if type(_G.FCF_SelectDockFrame) == "function" then
-    hooksecurefunc("FCF_SelectDockFrame", function(chatFrame)
-      QueueFrame(chatFrame, "select_dock_frame")
-      QueueAll("select_dock_frame")
-    end)
-  end
+  InstallGlobalPostHook("FCF_SelectDockFrame", function()
+    QueueAll("select_dock_frame")
+  end)
 
-  if type(_G.FCF_DockUpdate) == "function" then
-    hooksecurefunc("FCF_DockUpdate", function()
-      QueueAll("dock_update")
-    end)
-  end
+  InstallGlobalPostHook("FCF_DockUpdate", function()
+    QueueAll("dock_update")
+  end)
 
-  if type(_G.FCF_OpenTemporaryWindow) == "function" then
-    hooksecurefunc("FCF_OpenTemporaryWindow", function()
-      QueueAll("open_temporary_window")
-    end)
-  end
+  InstallGlobalPostHook("FCF_OpenTemporaryWindow", function()
+    QueueAll("open_temporary_window")
+  end)
 
-  if type(_G.FCF_OpenNewWindow) == "function" then
-    hooksecurefunc("FCF_OpenNewWindow", function()
-      QueueAll("open_new_window")
-    end)
-  end
+  InstallGlobalPostHook("FCF_OpenNewWindow", function()
+    QueueAll("open_new_window")
+  end)
 
-  if type(_G.FCF_SetTemporaryWindowType) == "function" then
-    hooksecurefunc("FCF_SetTemporaryWindowType", function(chatFrame)
-      QueueFrame(chatFrame, "set_temporary_window_type")
-      QueueAll("set_temporary_window_type")
-    end)
-  end
+  InstallGlobalPostHook("FCF_SetTemporaryWindowType", function()
+    QueueAll("set_temporary_window_type")
+  end)
 
-  if type(_G.FCF_Close) == "function" then
-    hooksecurefunc("FCF_Close", function(frame, fallback)
-      local chatFrame = NS.ResolveClosedChatFrame(frame, fallback)
-      RothChat:QueueChatLifecycleClose(chatFrame, "close_window")
-    end)
-  end
+  InstallGlobalPostHook("FCF_Close", function(frame, fallback)
+    local chatFrame = NS.ResolveClosedChatFrame(frame, fallback)
+    RothChat:QueueChatLifecycleClose(chatFrame, "close_window")
+  end)
 
-  if type(_G.FCF_ResetChatWindows) == "function" then
-    hooksecurefunc("FCF_ResetChatWindows", function()
-      QueueAll("reset_chat_windows")
-    end)
-  end
+  InstallGlobalPostHook("FCF_ResetChatWindows", function()
+    QueueAll("reset_chat_windows")
+  end)
 
-  if type(_G.FCF_RestoreChatsToFrame) == "function" then
-    hooksecurefunc("FCF_RestoreChatsToFrame", function(targetFrame)
-      QueueFrame(targetFrame, "restore_chat_subscriptions")
-    end)
-  end
+  InstallGlobalPostHook("FCF_RestoreChatsToFrame", function(targetFrame)
+    QueueFrame(targetFrame, "restore_chat_subscriptions")
+  end)
 
-  if type(_G.FCF_SetWindowName) == "function" then
-    hooksecurefunc("FCF_SetWindowName", function(chatFrame)
-      if NS.CanAccessObject(chatFrame) then QueueFrame(chatFrame, "window_name_changed") end
-    end)
-  end
+  InstallGlobalPostHook("FCF_SetWindowName", function(chatFrame)
+    if NS.CanAccessObject(chatFrame) then QueueFrame(chatFrame, "window_name_changed") end
+  end)
 end
