@@ -76,6 +76,7 @@ local historyReads = 0
 local deferredJobs = {}
 local activeFrameScans = 0
 local fadeOwners = setmetatable({}, { __mode = "k" })
+local hideOnVisible = false
 local chatFrame = newWidget("ScrollingMessageFrame", "ChatFrame1")
 chatFrame.alpha = 0.65
 local activeFrameList = { chatFrame }
@@ -136,7 +137,12 @@ local core = {
     historyReads = historyReads + 1
     return "previously displayed chat"
   end,
-  Emit = function() end,
+  Emit = function(_, event, _, visible)
+    if event == "COPY_OVERLAY_VISIBILITY" and visible and hideOnVisible then
+      local current = _G.RothChatCopyOverlay_ChatFrame1
+      if current then current:Hide() end
+    end
+  end,
   On = function(_, event, callback)
     if event == "CHAT_RESTRICTION_CHANGED" then restrictionListener = callback end
   end,
@@ -161,6 +167,14 @@ assert(historyReads == 1 and chatFrame.alpha == 0)
 overlay:Hide()
 assert(chatFrame.alpha == 0.65, "owned alpha must restore its exact snapshot")
 fadeOwners[chatFrame] = nil -- model completion of the restore fade
+
+-- A visibility listener may synchronously close the overlay. The stale OnShow
+-- continuation must not start a fade after OnHide has already relinquished it.
+hideOnVisible = true
+doubleClick(chatFrame)
+assert(not overlay:IsShown() and chatFrame.alpha == 0.65)
+assert(fadeOwners[chatFrame] == nil, "reentrant hide must leave no stale show fade")
+hideOnVisible = false
 
 -- A later direct write owns the property and must survive overlay teardown.
 doubleClick(chatFrame)
