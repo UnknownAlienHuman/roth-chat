@@ -42,13 +42,14 @@ These results establish syntax and mocked-contract behavior for that exact tree 
 
 ### Third audit follow-up — 2026-11-03
 
-The lifecycle/Restore/dispatch follow-up was checked locally with Lua 5.3.6 (`texlua`):
+The lifecycle/Restore/dispatch follow-up was checked locally with Lua 5.3.6 (`texlua`) and Lua 5.4 through the installed `liblua5.4` runtime:
 
-- modified production files and replacement specs parsed;
-- focused close-generation, Restore replay/capacity/schema, and denied-hook contracts passed;
-- the repository-form Restore spec passed.
+- modified production files and replacement specs parsed on both runtimes;
+- focused close-generation, Restore replay/capacity/schema, and denied-hook contracts passed on both runtimes;
+- the repository-form Restore spec passed on both runtimes;
+- the exact capacity case retains 1000 valid rows plus one unknown future row, replays only `m873..m1000` into a 128-line frame, and exports the newest five valid rows without charging the unknown row against the line budget.
 
-The full Lua 5.1.1 + 5.4.6 validator was **NOT RUN** for this follow-up in the current environment. Do not inherit the base-tree PASS for changed files. The new regressions cover terminal close ordering, native replay capacity, valid-row selection across unknown future rows, removal of Restore frame-property ownership, and terminal denied AddMessage hooks. No client CPU/FPS improvement has been measured.
+The complete repository validator, including Lua 5.1.1, was **NOT RUN** for this follow-up in the current environment. Do not inherit the base-tree PASS for changed files. The new regressions cover terminal close ordering, native replay capacity, valid-row selection across unknown future rows, strict native count/capacity validation, removal of Restore frame-property ownership, and terminal denied AddMessage hooks. No client CPU/FPS improvement has been measured.
 
 ## Live-client gate
 
