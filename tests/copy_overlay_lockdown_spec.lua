@@ -1,8 +1,8 @@
--- CopyOverlay drops an open copy surface when chat restrictions start and
--- cannot fetch chat history while the restriction is active.
+-- CopyOverlay drops an open copy surface when chat restrictions start, avoids
+-- restricted history reads, and restores alpha only while it still owns it.
 
 local function newWidget(kind, name)
-  local widget = { kind = kind, name = name, scripts = {}, hooks = {}, shown = false, text = "", width = 400 }
+  local widget = { kind = kind, name = name, scripts = {}, hooks = {}, shown = false, text = "", width = 400, alpha = 1 }
   function widget:SetSize() end
   function widget:SetPoint() end
   function widget:SetAllPoints() end
@@ -24,6 +24,8 @@ local function newWidget(kind, name)
   function widget:GetVerticalScrollRange() return 0 end
   function widget:SetText(value) self.text = value or "" end
   function widget:GetText() return self.text end
+  function widget:SetAlpha(value) self.alpha = value end
+  function widget:GetAlpha() return self.alpha end
   function widget:ClearFocus() self.focused = false end
   function widget:SetFocus() self.focused = true end
   function widget:HighlightText() end
@@ -73,11 +75,12 @@ local restrictionListener
 local historyReads = 0
 local deferredJobs = {}
 local activeFrameScans = 0
+local fadeOwners = setmetatable({}, { __mode = "k" })
 local chatFrame = newWidget("ScrollingMessageFrame", "ChatFrame1")
+chatFrame.alpha = 0.65
 local activeFrameList = { chatFrame }
 chatFrame.GetName = function() return "ChatFrame1" end
 chatFrame.GetID = function() return 1 end
-chatFrame.GetAlpha = function() return 1 end
 
 _G.RothChat = {
   RegisterModule = function(_, module) registeredModule = module end,
@@ -87,6 +90,7 @@ local NS = {
   IsChatMessagingRestricted = function() return restricted end,
   CanAccessValue = function() return true end,
   CanAccessObject = function(value) return type(value) == "table" end,
+  SafeNumber = function(value) return type(value) == "number" and value or nil end,
   IsActiveChatFrame = function(candidate) return candidate == chatFrame end,
   ResolveActiveDockChatFrame = function(candidate) return candidate end,
   SafeToString = tostring,
@@ -97,7 +101,18 @@ local NS = {
   ApplyGlassBackdrop = function() end,
   RunNextFrame = function(_, callback) callback() end,
   CancelScheduled = function() end,
-  FadeTo = function() end,
+  FadeTo = function(frame, target, duration, callback, owner)
+    frame:SetAlpha(target)
+    fadeOwners[frame] = duration and duration > 0 and { owner = owner } or nil
+    if callback and (not duration or duration == 0) then callback(frame) end
+  end,
+  IsFading = function(frame) return fadeOwners[frame] ~= nil end,
+  StopOwnedFade = function(frame, owner)
+    local fade = fadeOwners[frame]
+    if not fade or fade.owner ~= owner then return false end
+    fadeOwners[frame] = nil
+    return true
+  end,
   Clamp = function(value, low, high) return math.max(low, math.min(high, value)) end,
   NormalizeCopyText = function(text, includeTimestamps)
     if restricted then return "" end
@@ -129,24 +144,54 @@ local core = {
   CancelDeferred = function(_, key) deferredJobs[key] = nil end,
 }
 
+local function doubleClick(frame)
+  local callback = assert(frame.hooks.OnMouseUp)
+  callback(frame, "LeftButton")
+  callback(frame, "LeftButton")
+end
+
 module:Init(core)
 module:OnEnable(core)
 local overlay = assert(_G.RothChatCopyOverlay_ChatFrame1)
-local doubleClick = assert(chatFrame.hooks.OnMouseUp)
-doubleClick(chatFrame, "LeftButton")
-doubleClick(chatFrame, "LeftButton")
+doubleClick(chatFrame)
 assert(overlay:IsShown())
 assert(overlay.editBox:GetText() == "previously displayed chat")
-assert(historyReads == 1)
+assert(historyReads == 1 and chatFrame.alpha == 0)
 
+overlay:Hide()
+assert(chatFrame.alpha == 0.65, "owned alpha must restore its exact snapshot")
+fadeOwners[chatFrame] = nil -- model completion of the restore fade
+
+-- A later direct write owns the property and must survive overlay teardown.
+doubleClick(chatFrame)
+assert(overlay:IsShown() and chatFrame.alpha == 0)
+fadeOwners[chatFrame] = nil
+chatFrame.alpha = 0.42
+overlay:Hide()
+assert(chatFrame.alpha == 0.42, "foreign direct alpha must survive teardown")
+
+-- A later foreign fade also wins, even when the overlay still has a snapshot.
+doubleClick(chatFrame)
+local foreignOwner = {}
+fadeOwners[chatFrame] = { owner = foreignOwner }
+chatFrame.alpha = 0.25
+overlay:Hide()
+assert(chatFrame.alpha == 0.25 and fadeOwners[chatFrame].owner == foreignOwner,
+  "foreign replacement fade must survive teardown")
+fadeOwners[chatFrame] = nil
+
+-- Restriction entry closes the surface and clears retained text.
+doubleClick(chatFrame)
+assert(overlay:IsShown())
+local readsBeforeRestriction = historyReads
 restricted = true
 restrictionListener(nil, core, true)
 assert(not overlay:IsShown(), "active copy UI must close when chat restrictions start")
 assert(overlay.editBox:GetText() == "", "restricted transition must clear retained copy text")
 
-doubleClick(chatFrame, "LeftButton")
-doubleClick(chatFrame, "LeftButton")
-assert(historyReads == 1, "copying while restricted must not read persisted or native history")
+doubleClick(chatFrame)
+assert(historyReads == readsBeforeRestriction,
+  "copying while restricted must not read persisted or native history")
 assert(not overlay:IsShown())
 
 restricted = false
