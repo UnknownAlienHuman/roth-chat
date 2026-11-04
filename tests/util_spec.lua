@@ -9,11 +9,30 @@ assert(NS.SafeTrunc("Привет🙂", 6) == "Привет...")
 assert(NS.SafeTrunc("abc", 3) == "abc")
 assert(NS.SafeNumber(0/0, 2) == 2 and NS.SafeNumber(math.huge, 3) == 3)
 
+-- Table access queries are fallible and their result is independently gated.
+local source, target = { copied = true }, { preserved = true }
+local originalCanAccessTable = canaccesstable
+canaccesstable = function(value)
+  if value == source then error("denied table query") end
+  return originalCanAccessTable(value)
+end
+assert(NS.CopyTable(source, target) == target and target.preserved and target.copied == nil)
+canaccesstable = function(value)
+  if value == source then return env.inaccessible end
+  return originalCanAccessTable(value)
+end
+assert(NS.CopyTable(source, target) == target and target.copied == nil)
+canaccesstable = originalCanAccessTable
+assert(NS.CopyTable(source, target) == target and target.copied == true)
+
 local captured
 NS.Schedule("arity", 0, function(...) captured = NS.Pack(...) end, nil, 1, nil, 3, nil)
 env:Advance()
 assert(captured.n == 4 and captured[1] == 1 and captured[2] == nil and captured[3] == 3)
 assert(not NS.Schedule("opaque", 0, function() error("must not run") end, nil, env.inaccessible))
+assert(not NS.Schedule(env.inaccessible, 0, function() error("opaque key ran") end))
+assert(not NS.Schedule("opaque-label", 0, function() error("opaque label ran") end, env.inaccessible))
+NS.CancelScheduled(env.inaccessible)
 
 -- Both jobs are already due. Whichever runs first cancels the other.
 local count = 0
@@ -26,10 +45,10 @@ assert(count == 1, "cancellation must invalidate an already captured due job")
 env.frame.alpha = 0
 NS.FadeTo(env.frame, 1, 1)
 env:Advance(0.1)
-local target = env.frame.alpha + 0.001
-NS.FadeTo(env.frame, target, 1)
+local targetAlpha = env.frame.alpha + 0.001
+NS.FadeTo(env.frame, targetAlpha, 1)
 env:Advance(2)
-assert(env.frame.alpha == target, "old fade must not overwrite an immediate completion")
+assert(env.frame.alpha == targetAlpha, "old fade must not overwrite an immediate completion")
 env.frame.alpha = env.inaccessible
 NS.FadeTo(env.frame, 0, 1)
 env:Advance(1)
