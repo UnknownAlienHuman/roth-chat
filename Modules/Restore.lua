@@ -308,17 +308,20 @@ local function BuildExport(entries, maxLines, includeTimestamps)
   if count <= 0 then return "" end
 
   maxLines = ClampInt(maxLines, 1, 10000, 500)
-  local first = math.max(1, count - maxLines + 1)
-  local out = {}
-  for index = first, count do
+  local selected = {}
+  for index = count, 1, -1 do
     local text, timestamp = GetEntryBaseText(entries[index])
     if text ~= "" then
       if includeTimestamps and timestamp then
         text = NS.FormatChatTimestamp(timestamp, false, nil, "%H:%M:%S") .. text
       end
-      out[#out + 1] = text
+      selected[#selected + 1] = text
+      if #selected >= maxLines then break end
     end
   end
+
+  local out = {}
+  for index = #selected, 1, -1 do out[#out + 1] = selected[index] end
   return table.concat(out, "\n")
 end
 
@@ -353,8 +356,8 @@ end
 
 local function GetReplayLimit(chatFrame, retentionLimit)
   local frameCapacity = ReadFrameNumber(chatFrame, "GetMaxLines")
-  if not frameCapacity or frameCapacity < 1 then return nil end
-  return math.min(retentionLimit, math.floor(frameCapacity))
+  if not frameCapacity or frameCapacity < 1 or frameCapacity ~= math.floor(frameCapacity) then return nil end
+  return math.min(retentionLimit, frameCapacity)
 end
 
 local function SanitizeColor(value)
@@ -391,7 +394,9 @@ local function OnAddMessage(frame, text, r, g, b)
 end
 
 local function GetFrameMessageCount(chatFrame)
-  return ReadFrameNumber(chatFrame, "GetNumMessages")
+  local count = ReadFrameNumber(chatFrame, "GetNumMessages")
+  if not count or count < 0 or count ~= math.floor(count) then return nil end
+  return count
 end
 
 local function RestoreChatFrame(self, chatFrame, retentionLimit)
