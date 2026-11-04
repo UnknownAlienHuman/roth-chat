@@ -2,6 +2,9 @@
 local _, NS = ...
 local core = _G.RothChat
 
+local FILTER_ERROR_WINDOW = 10
+local nextFilterRegistrationID = 0
+
 local function InsertSorted(entries, entry)
   for index = 1, #entries do
     if entry[3] < entries[index][3] then table.insert(entries, index, entry); return end
@@ -52,9 +55,36 @@ end
 
 local function AddEntry(state, callback, owner, priority)
   if Find(state, callback, owner) then return end
-  local entry = { callback, owner, NS.SafeNumber(priority, 50) }
+  nextFilterRegistrationID = nextFilterRegistrationID + 1
+  local entry = { callback, owner, NS.SafeNumber(priority, 50), nil, nextFilterRegistrationID }
   if state.depth > 0 then state.pending[#state.pending + 1] = entry
   else InsertSorted(state.entries, entry) end
+end
+
+local function ReportFilterFailure(event, entry)
+  local now = NS.SafeNumber(GetTime(), 0)
+  local failure = entry[4]
+  if not failure then
+    failure = { suppressed = 0 }
+    entry[4] = failure
+  end
+
+  local lastReport = failure.lastReport
+  if lastReport and now - lastReport < FILTER_ERROR_WINDOW then
+    failure.suppressed = failure.suppressed + 1
+    return
+  end
+
+  local label = "RothChat:MsgFilter:" .. event .. "#" .. tostring(entry[5])
+  if failure.suppressed > 0 then
+    label = label .. " (" .. failure.suppressed .. " repeats suppressed)"
+  end
+  failure.lastReport = now
+  if NS.ReportError(label) then
+    failure.suppressed = 0
+  else
+    failure.suppressed = failure.suppressed + 1
+  end
 end
 
 core._messageFilterState = {}
@@ -87,13 +117,16 @@ local function NewFilterState(event)
       if entry[1] then
         local ok, discard, replacement = pcall(entry[1], chatFrame, event, NS.Unpack(args))
         if not ok then
-          NS.ReportError("RothChat:MsgFilter:" .. event)
-        elseif NS.CanAccessValue(discard) then
-          if discard == true then
-            discardMessage = true
-            break
-          elseif NS.CanAccessValue(replacement) and type(replacement) == "string" then
-            args[1] = replacement
+          ReportFilterFailure(event, entry)
+        else
+          entry[4] = nil
+          if NS.CanAccessValue(discard) then
+            if discard == true then
+              discardMessage = true
+              break
+            elseif NS.CanAccessValue(replacement) and type(replacement) == "string" then
+              args[1] = replacement
+            end
           end
         end
       end

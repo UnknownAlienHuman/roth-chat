@@ -15,6 +15,7 @@ local M = {
 
 local QUEUE_MAX = 100
 local MAX_MESSAGE_CHARS = 1024
+local ALPHA_EPSILON = 0.01
 local tickers = setmetatable({}, { __mode = "k" })
 local messageQueue = setmetatable({}, { __mode = "k" })
 local frameSnapshots = setmetatable({}, { __mode = "k" })
@@ -173,19 +174,26 @@ local function ClearTickerDisplay(frame)
   tickerFrame.charIndex = 0
 end
 
+local function GetAlpha(frame)
+  if CanAccessFrame(frame) and type(frame.GetAlpha) == "function" then
+    local ok, alpha = pcall(frame.GetAlpha, frame)
+    if ok then return SafeNumber(alpha) end
+  end
+  return nil
+end
+
 local function GetMouseEnabled(frame)
   if CanAccessFrame(frame) and type(frame.IsMouseEnabled) == "function" then
     local ok, enabled = pcall(frame.IsMouseEnabled, frame)
-    if ok then return enabled and true or false end
+    if ok and NS.CanAccessValue(enabled) then return enabled and true or false end
   end
   return nil
 end
 
 local function CaptureFrameOwnership(frame)
   if not CanAccessFrame(frame) or frameSnapshots[frame] then return end
-  local alpha = type(frame.GetAlpha) == "function" and frame:GetAlpha() or 1
   frameSnapshots[frame] = {
-    alpha = SafeNumber(alpha),
+    alpha = GetAlpha(frame),
     mouseEnabled = GetMouseEnabled(frame),
   }
 end
@@ -194,13 +202,23 @@ local function RestoreFrameOwnership(frame)
   local snapshot = frame and frameSnapshots[frame]
   if not snapshot or not CanAccessFrame(frame) then return end
 
-  NS.StopFading(frame)
-  if type(frame.SetAlpha) == "function" and type(snapshot.alpha) == "number" then
+  local hadActiveFade = type(NS.IsFading) == "function" and NS.IsFading(frame) or false
+  local ownsActiveFade = type(NS.StopOwnedFade) == "function" and NS.StopOwnedFade(frame, M) or false
+  local currentAlpha = GetAlpha(frame)
+  local alphaStillOwned = ownsActiveFade
+    or (not hadActiveFade and type(snapshot.lastAlphaWrite) == "number" and type(currentAlpha) == "number"
+      and math.abs(currentAlpha - snapshot.lastAlphaWrite) < ALPHA_EPSILON)
+  if alphaStillOwned and type(frame.SetAlpha) == "function" and type(snapshot.alpha) == "number" then
     frame:SetAlpha(snapshot.alpha)
   end
-  if type(frame.EnableMouse) == "function" and snapshot.mouseEnabled ~= nil then
+
+  local currentMouse = GetMouseEnabled(frame)
+  if snapshot.mouseEnabled ~= nil and snapshot.lastMouseWrite ~= nil
+    and currentMouse == snapshot.lastMouseWrite and type(frame.EnableMouse) == "function"
+  then
     frame:EnableMouse(snapshot.mouseEnabled)
   end
+
   frame.__rothMouseForcedOff = nil
   frameSnapshots[frame] = nil
 end
@@ -370,15 +388,22 @@ local function SetOwnedChatAlpha(core, frame, active)
     and (SafeNumber(core:Get("immersionFadeInDuration")) or SafeNumber(core:Get("immersionFadeDuration")) or 0.15)
     or (SafeNumber(core:Get("immersionFadeOutDuration")) or SafeNumber(core:Get("immersionFadeDuration")) or 0.35)
 
-  NS.FadeTo(frame, target, duration)
   local snapshot = frameSnapshots[frame]
-  if type(frame.EnableMouse) == "function" then
-    if target <= 0.01 then
+  if snapshot then snapshot.lastAlphaWrite = target end
+  NS.FadeTo(frame, target, duration, nil, M)
+
+  if snapshot and type(frame.EnableMouse) == "function" then
+    local mouseTarget
+    if target <= ALPHA_EPSILON then
+      mouseTarget = false
       frame.__rothMouseForcedOff = true
-      frame:EnableMouse(false)
-    elseif snapshot and snapshot.mouseEnabled ~= nil then
-      frame:EnableMouse(snapshot.mouseEnabled)
+    elseif snapshot.mouseEnabled ~= nil then
+      mouseTarget = snapshot.mouseEnabled
       frame.__rothMouseForcedOff = nil
+    end
+    if mouseTarget ~= nil then
+      snapshot.lastMouseWrite = mouseTarget
+      frame:EnableMouse(mouseTarget)
     end
   end
 end
@@ -406,6 +431,7 @@ local function UpdateVisibility(core, frame, active)
 
   if IsChatRestricted() then
     ClearTickerDisplay(frame)
+    RestoreFrameOwnership(frame)
     return
   end
 
@@ -437,6 +463,7 @@ function M:ProcessQueue(core, frame)
   if not CanAccessFrame(frame) then return end
   if IsChatRestricted() then
     ClearTickerDisplay(frame)
+    RestoreFrameOwnership(frame)
     return
   end
   local tickerFrame = tickers[frame]
@@ -660,11 +687,12 @@ local function RegisterTickerListeners(core)
   core:On("CHAT_RESTRICTION_CHANGED", function(_, core2, restricted)
     chatRestricted = restricted == true
     if chatRestricted then
-      -- A queue may contain text captured before lockdown. Drop it and stop all
-      -- active presentation immediately; clearing the restriction never replays it.
+      -- A queue may contain text captured before lockdown. Drop it, stop all
+      -- presentation, and relinquish frame ownership immediately.
       for frame in pairs(messageQueue) do ClearQueue(frame) end
       for frame, tickerFrame in pairs(tickers) do
         if CanAccessFrame(tickerFrame) then ClearTickerDisplay(frame) end
+        RestoreFrameOwnership(frame)
       end
     else
       for frame in pairs(tickers) do

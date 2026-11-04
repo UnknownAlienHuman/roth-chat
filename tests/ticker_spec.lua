@@ -6,6 +6,7 @@ local listeners = {}
 local createdFrames = {}
 local scheduled = {}
 local deferred = {}
+local fadeOwners = setmetatable({}, { __mode = "k" })
 local inCombat = false
 local unpackValues = unpack or table.unpack
 
@@ -90,6 +91,7 @@ _G.RothChat = {
 local NS = {
   CanAccessObject = function(frame) return frame ~= nil end,
   CanAccessValue = function() return true end,
+  CanAccessAllValues = function() return true end,
   SafeNumber = function(value)
     return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value or nil
   end,
@@ -111,11 +113,23 @@ local NS = {
     if value > maximum then return maximum end
     return value
   end,
-  FadeTo = function(frame, target, _, callback)
+  FadeTo = function(frame, target, duration, callback, owner)
+    if owner and duration and duration > 0 then
+      fadeOwners[frame] = owner
+      frame:SetAlpha((frame:GetAlpha() + target) / 2)
+      return
+    end
+    fadeOwners[frame] = nil
     frame:SetAlpha(target)
     if callback then callback(frame) end
   end,
-  StopFading = function() end,
+  StopFading = function(frame) fadeOwners[frame] = nil end,
+  IsFading = function(frame) return fadeOwners[frame] ~= nil end,
+  StopOwnedFade = function(frame, owner)
+    if fadeOwners[frame] ~= owner then return false end
+    fadeOwners[frame] = nil
+    return true
+  end,
   RunNextFrame = function(key, callback) scheduled[key] = callback end,
   Schedule = function(key, _, callback) scheduled[key] = callback end,
   CancelScheduled = function(key) scheduled[key] = nil end,
@@ -160,7 +174,6 @@ local core = {
   On = function(_, event, callback, owner)
     listeners[event] = { callback = callback, owner = owner }
   end,
-  Defer = function(_, callback) callback() end,
   DeferKeyed = function(_, key, callback, ...)
     deferred[key] = { callback = callback, args = { ... } }
   end,
@@ -188,8 +201,8 @@ addMessageHook(primary, "hidden message", 1, 1, 1)
 assert(createdFrames[1].text:GetText() == "hidden message")
 assert(createdFrames[1]:GetScript("OnUpdate") == nil, "non-animated ticker mode must remain idle between messages")
 
--- Lockdown discards both active animation text and any queued message. Clearing
--- lockdown must not replay it; only a later AddMessage may appear.
+-- Lockdown discards both active animation text and any queued message, releases
+-- frame ownership, and never resumes old content after access returns.
 local holdKey = createdFrames[1].__holdScheduleKey
 assert(scheduled[holdKey], "the previous message should be in its bounded hold period")
 scheduled[holdKey]()
@@ -203,9 +216,12 @@ assert(createdFrames[1].text:GetText() == "")
 assert(createdFrames[1].fullText == "")
 assert(not createdFrames[1]:IsShown())
 assert(createdFrames[1]:GetScript("OnUpdate") == nil)
+assert(primary.alpha == 0.65 and primary.mouseEnabled == true,
+  "restriction entry must relinquish Ticker frame ownership")
 addMessageHook(primary, "restricted text", 1, 1, 1)
 restriction(nil, core, false)
 assert(createdFrames[1].text:GetText() == "", "lockdown-cleared content must not resume")
+visibility(nil, core, primary, false, false, false)
 values.tickerAnimation = "none"
 addMessageHook(primary, "post-lockdown text", 0.2, 0.4, 0.6)
 assert(createdFrames[1].text:GetText() == "post-lockdown text")
@@ -226,6 +242,7 @@ assert(tickerFrame.fullText == "bounded message 151", "a full queue should retai
 -- A line size cap bounds retained strings and work sent to FontStrings.
 restriction(nil, core, true)
 restriction(nil, core, false)
+visibility(nil, core, primary, false, false, false)
 addMessageHook(primary, string.rep("x", 5000), 1, 1, 1)
 assert(#tickerFrame.fullText <= 1027, "ticker text must be truncated before display")
 
@@ -251,10 +268,45 @@ deferred[module.__applyDeferredKey] = nil
 pendingApply.callback(unpackValues(pendingApply.args))
 assert(type(addMessageHook) == "function", "latest re-enable should own the AddMessage hook")
 
+-- A later owner wins. Disable must not overwrite alpha/mouse values that no
+-- longer match Ticker's last writes.
+primary.alpha = 0.42
+primary.mouseEnabled = true
 activeModules.Ticker = false
 module:OnDisable(core)
-assert(primary.alpha == 0.65 and primary.mouseEnabled == true, "disable must restore exact pre-Ticker state")
+assert(primary.alpha == 0.42 and primary.mouseEnabled == true,
+  "foreign frame state must survive Ticker teardown")
 assert(secondary.alpha == 0.35 and secondary.mouseEnabled == false)
 assert(addMessageHook == nil)
+
+-- A replacement fade owned by another subsystem must survive Ticker teardown,
+-- even when it begins at the last alpha written by Ticker.
+activeModules.Ticker = true
+values.immersionFadeInDuration = 1
+values.immersionFadeOutDuration = 1
+module:OnEnable(core)
+local foreignOwner = {}
+NS.FadeTo(primary, 0.9, 1, nil, foreignOwner)
+assert(fadeOwners[primary] == foreignOwner)
+local foreignAlpha = primary.alpha
+activeModules.Ticker = false
+module:OnDisable(core)
+assert(fadeOwners[primary] == foreignOwner and primary.alpha == foreignAlpha,
+  "Ticker teardown must not cancel or overwrite a replacement foreign fade")
+fadeOwners[primary] = nil
+
+-- An in-flight fade still owned by Ticker is cancelled and the exact snapshot
+-- is restored, including a non-default alpha and mouse state.
+primary.alpha = 0.42
+primary.mouseEnabled = true
+activeModules.Ticker = true
+values.immersionFadeInDuration = 1
+values.immersionFadeOutDuration = 1
+module:OnEnable(core)
+assert(fadeOwners[primary] == module and primary.alpha ~= 0.42)
+activeModules.Ticker = false
+module:OnDisable(core)
+assert(fadeOwners[primary] == nil)
+assert(primary.alpha == 0.42 and primary.mouseEnabled == true)
 
 print("ticker_spec: ok")
