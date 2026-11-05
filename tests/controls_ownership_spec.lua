@@ -161,6 +161,7 @@ local NS = {
 
 assert(loadfile("Modules/Controls.lua"))("RothChat", NS)
 local controls = RothChat.modules.Controls
+assert(controls:Init(core))
 controls:OnEnable(core)
 assert(type(chatFrame.scripts.OnMouseWheel) == "function" and chatFrame.scripts.OnMouseWheel ~= originalWheel)
 assert(chatFrame.mouseWheelEnabled and chatFrame.clipsChildren)
@@ -169,6 +170,30 @@ assert(fadeOwners[buttonFrame] and fadeOwners[buttonFrame].owner == controls)
 local ownedHandler = chatFrame.scripts.OnMouseWheel
 local scrollDriver = chatFrame.__rothSmoothScroll
 local frameCountAfterEnable = _G.CreateFrameCalls
+
+-- One hostile accessory cannot abort bounds or hover work for the chat frame.
+local hostileAccessory = newFrame("HostileAccessory")
+function hostileAccessory:GetRect() error("denied geometry") end
+function hostileAccessory:IsMouseOver() error("denied hover") end
+assert(pcall(core.RegisterHoverFrame, core, chatFrame, hostileAccessory))
+assert(pcall(core.UpdateHoverState, core, chatFrame))
+
+-- Smooth-scroll animation resolves the current native container at use time;
+-- it must not keep mutating a stale object after Blizzard replaces the field.
+local originalContainer = chatFrame.FontStringContainer
+local replacementContainer = newFrame("ReplacementContainer")
+chatFrame.FontStringContainer = replacementContainer
+scrollDriver.offset = 12
+scrollDriver.startOffset = 12
+scrollDriver.startTime = 0
+scrollDriver.duration = 100
+scrollDriver:Show()
+assert(type(scrollDriver.scripts.OnUpdate) == "function")
+scrollDriver.scripts.OnUpdate(scrollDriver)
+assert(#replacementContainer.points == 2)
+assert(#originalContainer.points == 0)
+chatFrame.FontStringContainer = originalContainer
+scrollDriver:Hide()
 
 active = false
 inCombat = true

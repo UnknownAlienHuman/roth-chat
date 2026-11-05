@@ -34,23 +34,33 @@ local function Flush(state)
   end
 end
 
-local function Find(state, callback, owner)
-  for _, entries in ipairs({ state.entries, state.pending }) do
-    for _, entry in ipairs(entries) do
-      if entry[1] == callback and entry[2] == owner then return entry end
-    end
+local function FindIn(entries, callback, owner)
+  for index = 1, #entries do
+    local entry = entries[index]
+    if entry[1] == callback and entry[2] == owner then return entry end
   end
 end
 
-local function RemoveOwner(state, owner)
-  for _, entries in ipairs({ state.entries, state.pending }) do
-    for _, entry in ipairs(entries) do
-      if entry[1] and entry[2] == owner then
-        entry[1] = nil
-        state.dirty = true
-      end
+local function Find(state, callback, owner)
+  return FindIn(state.entries, callback, owner)
+    or FindIn(state.pending, callback, owner)
+end
+
+local function RemoveOwnerFrom(entries, owner)
+  local removed = false
+  for index = 1, #entries do
+    local entry = entries[index]
+    if entry[1] and entry[2] == owner then
+      entry[1] = nil
+      removed = true
     end
   end
+  return removed
+end
+
+local function RemoveOwner(state, owner)
+  if RemoveOwnerFrom(state.entries, owner) then state.dirty = true end
+  if RemoveOwnerFrom(state.pending, owner) then state.dirty = true end
 end
 
 local function AddEntry(state, callback, owner, priority)
@@ -99,26 +109,41 @@ local function FlushFilter(event, state)
 end
 
 local function NewFilterState(event)
-  local state = { entries = {}, pending = {}, depth = 0, registered = false }
+  local state = {
+    entries = {},
+    pending = {},
+    depth = 0,
+    registered = false,
+    failurePrefix = "RothChat:MsgFilter:" .. event,
+  }
   state.dispatcher = function(chatFrame, _, ...)
     if not state.registered or #state.entries == 0 or NS.IsChatMessagingRestricted()
       or (chatFrame ~= nil and not NS.CanAccessObject(chatFrame))
       or not NS.CanAccessAllValues(...)
     then return false end
 
-    -- Borrow this exact tuple only for this synchronous call. Never assume a
-    -- 14/19-field shape: the selected Blizzard caller and registry disagree.
-    local args = NS.Pack(...)
-    if args.n == 0 or type(args[1]) ~= "string" then return false end
-    local originalText, discardMessage = args[1], false
+    -- Borrow the exact synchronous tuple directly from the client. The visible
+    -- first field can change between filters; every remaining field stays on
+    -- the Lua stack with its exact arity and nil positions.
+    if select("#", ...) == 0 then return false end
+    local originalText = ...
+    if type(originalText) ~= "string" then return false end
+    local currentText, discardMessage = originalText, false
+
     state.depth = state.depth + 1
     local limit = #state.entries
     for index = 1, limit do
       local entry = state.entries[index]
       if entry[1] then
-        local ok, discard, replacement = pcall(entry[1], chatFrame, event, NS.Unpack(args))
+        local ok, discard, replacement = pcall(
+          entry[1],
+          chatFrame,
+          event,
+          currentText,
+          select(2, ...)
+        )
         if not ok then
-          ReportCallbackFailure("RothChat:MsgFilter:" .. event, entry)
+          ReportCallbackFailure(state.failurePrefix, entry)
         else
           entry[4] = nil
           if NS.CanAccessValue(discard) then
@@ -126,7 +151,7 @@ local function NewFilterState(event)
               discardMessage = true
               break
             elseif NS.CanAccessValue(replacement) and type(replacement) == "string" then
-              args[1] = replacement
+              currentText = replacement
             end
           end
         end
@@ -134,8 +159,9 @@ local function NewFilterState(event)
     end
     state.depth = state.depth - 1
     FlushFilter(event, state)
+
     if discardMessage then return true end
-    if args[1] ~= originalText then return false, NS.Unpack(args) end
+    if currentText ~= originalText then return false, currentText, select(2, ...) end
     return false
   end
   return state

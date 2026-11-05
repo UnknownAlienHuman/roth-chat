@@ -118,6 +118,12 @@ function NS.SafeTrunc(text, maxChars)
   return text
 end
 
+local function CopyAccessibleEntries(source, staged)
+  for key, value in pairs(source) do
+    if NS.CanAccessAllValues(key, value) then staged[key] = value end
+  end
+end
+
 function NS.CopyTable(source, target)
   if not NS.CanAccessValue(target) then return {} end
   if target == nil then
@@ -130,12 +136,7 @@ function NS.CopyTable(source, target)
   -- Stage the copy so an iteration failure cannot leave a partially mutated
   -- ownership snapshot behind.
   local staged = {}
-  local ok = pcall(function()
-    for key, value in pairs(source) do
-      if NS.CanAccessAllValues(key, value) then staged[key] = value end
-    end
-  end)
-  if not ok then return target end
+  if not pcall(CopyAccessibleEntries, source, staged) then return target end
   for key, value in pairs(staged) do target[key] = value end
   return target
 end
@@ -148,45 +149,63 @@ end
 
 -- One keyed job per owner/action. A replaced or cancelled due job cannot run
 -- from an earlier snapshot; callback arguments retain their exact nil arity.
-local scheduledJobs, scheduledCount = {}, 0
+local scheduledJobs, scheduledCount, nextScheduledJobID = {}, 0, 0
 local MAX_SCHEDULED_JOBS = 128
 local schedulerFrame = CreateFrame("Frame", "RothChatScheduler")
 
 local function SchedulerOnUpdate(self)
-  local now, due = GetTime(), nil
+  local now = NS.SafeNumber(GetTime())
+  if not now then return end
+
+  local due
   for key, job in pairs(scheduledJobs) do
     if now >= job.at then
       due = due or {}
-      due[#due + 1] = { key, job }
+      due[#due + 1] = key
+      due[#due + 1] = job
     end
   end
   if not due then return end
-  for index = 1, #due do
-    local key, job = due[index][1], due[index][2]
+
+  for index = 1, #due, 2 do
+    local key, job = due[index], due[index + 1]
     if scheduledJobs[key] == job then
       scheduledJobs[key] = nil
       scheduledCount = scheduledCount - 1
-      NS.SafeCall(job.label or "RothChat:Schedule", job.fn, NS.Unpack(job.args))
+      NS.SafeCall(job.diagnosticLabel, job.fn, NS.Unpack(job.args))
     end
   end
   if not next(scheduledJobs) then self:SetScript("OnUpdate", nil) end
 end
 
 function NS.Schedule(key, delay, callback, label, ...)
-  if not NS.CanAccessAllValues(key, callback, label) or key == nil
-    or type(callback) ~= "function" or not NS.CanAccessAllValues(...)
+  if not NS.CanAccessAllValues(key, delay, callback, label) or key == nil
+    or type(callback) ~= "function" or (label ~= nil and type(label) ~= "string")
+    or not NS.CanAccessAllValues(...)
   then
     return false
   end
-  if not scheduledJobs[key] then
+
+  delay = NS.SafeNumber(delay)
+  local now = NS.SafeNumber(GetTime())
+  if delay == nil or now == nil then return false end
+
+  local previous = scheduledJobs[key]
+  local id = previous and previous.id
+  if not id then
     if scheduledCount >= MAX_SCHEDULED_JOBS then return false end
     scheduledCount = scheduledCount + 1
+    nextScheduledJobID = nextScheduledJobID + 1
+    id = nextScheduledJobID
   end
+
+  local baseLabel = label or "RothChat:Schedule"
   scheduledJobs[key] = {
-    at = GetTime() + math.max(0, NS.SafeNumber(delay, 0)),
+    at = now + math.max(0, delay),
     fn = callback,
     args = NS.Pack(...),
-    label = label,
+    id = id,
+    diagnosticLabel = baseLabel .. "#" .. tostring(id),
   }
   if not schedulerFrame:GetScript("OnUpdate") then
     schedulerFrame:SetScript("OnUpdate", SchedulerOnUpdate)
@@ -199,24 +218,29 @@ function NS.RunNextFrame(key, callback, label, ...)
 end
 
 function NS.CancelScheduled(key)
-  if not NS.CanAccessValue(key) then return end
-  if key ~= nil and scheduledJobs[key] then
-    scheduledJobs[key] = nil
-    scheduledCount = scheduledCount - 1
-  end
+  if not NS.CanAccessValue(key) then return false end
+  if key == nil or not scheduledJobs[key] then return false end
+  scheduledJobs[key] = nil
+  scheduledCount = scheduledCount - 1
   if not next(scheduledJobs) then schedulerFrame:SetScript("OnUpdate", nil) end
+  return true
 end
 
 -- Shared easing adapted from ls_Glass (Apache-2.0; see ThirdParty/ATTRIBUTIONS.md).
 local fadeObjects = {}
 local fadeUpdater = CreateFrame("Frame", "RothChatFader")
+local nextFadeID = 0
 
 local function CanFade(frame)
   return NS.CanAccessObject(frame)
 end
 
+local function ReadField(object, field)
+  return object[field]
+end
+
 local function GetFrameMethod(frame, methodName)
-  local ok, method = pcall(function() return frame[methodName] end)
+  local ok, method = pcall(ReadField, frame, methodName)
   if not ok or not NS.CanAccessValue(method) or type(method) ~= "function" then return nil end
   return method
 end
@@ -234,6 +258,11 @@ local function WriteAlpha(frame, alpha)
   local method = GetFrameMethod(frame, "SetAlpha")
   if not method then return false end
   return pcall(method, frame, alpha)
+end
+
+local function NewFadeDiagnosticLabel()
+  nextFadeID = nextFadeID + 1
+  return "RothChat:FadeComplete#" .. tostring(nextFadeID)
 end
 
 local function StopIdleFader()
@@ -264,7 +293,8 @@ local function FadeOnUpdate(_, elapsed)
       elseif done then
         if data.callback then
           completed = completed or {}
-          completed[#completed + 1] = { frame, data }
+          completed[#completed + 1] = frame
+          completed[#completed + 1] = data
         elseif fadeObjects[frame] == data then
           fadeObjects[frame] = nil
         end
@@ -275,11 +305,11 @@ local function FadeOnUpdate(_, elapsed)
   -- Keep completion identity until dispatch so an earlier callback can cancel
   -- or replace a later completion from this same update.
   if completed then
-    for _, completion in ipairs(completed) do
-      local frame, data = completion[1], completion[2]
+    for index = 1, #completed, 2 do
+      local frame, data = completed[index], completed[index + 1]
       if fadeObjects[frame] == data then
         fadeObjects[frame] = nil
-        if CanFade(frame) then NS.SafeCall("RothChat:FadeComplete", data.callback, frame) end
+        if CanFade(frame) then NS.SafeCall(data.diagnosticLabel, data.callback, frame) end
       end
     end
   end
@@ -287,11 +317,13 @@ local function FadeOnUpdate(_, elapsed)
 end
 
 function NS.StopFading(frame, alpha)
-  if not NS.CanAccessValue(frame) or frame == nil then return end
+  if not NS.CanAccessValue(frame) or frame == nil then return false end
+  local stopped = fadeObjects[frame] ~= nil
   fadeObjects[frame] = nil
   alpha = NS.SafeNumber(alpha)
   if alpha ~= nil then WriteAlpha(frame, NS.Clamp(alpha, 0, 1)) end
   StopIdleFader()
+  return stopped
 end
 
 -- Stop a fade only when the caller still owns the active fade record. This is
@@ -329,7 +361,7 @@ function NS.FadeTo(frame, target, duration, callback, owner)
   if duration == 0 or math.abs(current - target) < 0.01 then
     NS.StopFading(frame)
     if not WriteAlpha(frame, target) then return false end
-    if callback then NS.SafeCall("RothChat:FadeComplete", callback, frame) end
+    if callback then NS.SafeCall(NewFadeDiagnosticLabel(), callback, frame) end
     return true
   end
 
@@ -338,6 +370,9 @@ function NS.FadeTo(frame, target, duration, callback, owner)
     and previous.duration == duration
   then
     previous.callback = callback
+    if callback and not previous.diagnosticLabel then
+      previous.diagnosticLabel = NewFadeDiagnosticLabel()
+    end
     return true
   end
 
@@ -347,6 +382,7 @@ function NS.FadeTo(frame, target, duration, callback, owner)
     target = target,
     duration = duration,
     callback = callback,
+    diagnosticLabel = callback and NewFadeDiagnosticLabel() or nil,
     owner = owner,
   }
   if not fadeUpdater:GetScript("OnUpdate") then fadeUpdater:SetScript("OnUpdate", FadeOnUpdate) end

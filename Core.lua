@@ -21,6 +21,7 @@ RothChat.moduleState = {}    -- [moduleName] = runtime lifecycle state
 RothChat._deferred = {}
 RothChat._deferredByKey = {}
 RothChat._deferredCount = 0
+RothChat._nextDeferredID = 0
 RothChat._addonLoaded = false
 RothChat._addonEnabled = false
 RothChat._loginComplete = false
@@ -507,7 +508,13 @@ function RothChat:DeferKeyed(key, callback, ...)
     end
     self._deferred = retained
   end
-  job = { key = key, fn = callback, args = NS.Pack(...) }
+  self._nextDeferredID = self._nextDeferredID + 1
+  job = {
+    key = key,
+    fn = callback,
+    args = NS.Pack(...),
+    diagnosticLabel = "RothChat:Deferred#" .. tostring(self._nextDeferredID),
+  }
   self._deferredByKey[key] = job
   self._deferred[#self._deferred + 1] = job
   self._deferredCount = self._deferredCount + 1
@@ -536,7 +543,7 @@ function RothChat:RunDeferred()
       else
         self._deferredByKey[job.key] = nil
         self._deferredCount = self._deferredCount - 1
-        NS.SafeCall("RothChat:Deferred", job.fn, NS.Unpack(job.args))
+        NS.SafeCall(job.diagnosticLabel, job.fn, NS.Unpack(job.args))
       end
     end
   end

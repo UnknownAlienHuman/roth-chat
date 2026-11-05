@@ -49,6 +49,38 @@ local function Flush(self, event, state)
   end
 end
 
+local function Contains(entries, fn, owner)
+  for index = 1, #entries do
+    local existing = entries[index]
+    if existing.fn == fn and existing.owner == owner then return true end
+  end
+  return false
+end
+
+local function RemoveFunction(entries, fn)
+  local removed = false
+  for index = 1, #entries do
+    local entry = entries[index]
+    if entry and entry.fn == fn then
+      entry.fn = nil
+      removed = true
+    end
+  end
+  return removed
+end
+
+local function RemoveOwnerFrom(entries, owner)
+  local removed = false
+  for index = 1, #entries do
+    local entry = entries[index]
+    if entry and entry.fn and entry.owner == owner then
+      entry.fn = nil
+      removed = true
+    end
+  end
+  return removed
+end
+
 function RothChat:On(event, fn, owner)
   if not NS.CanAccessAllValues(event, fn, owner)
     or type(event) ~= "string" or type(fn) ~= "function"
@@ -57,13 +89,16 @@ function RothChat:On(event, fn, owner)
   end
 
   local state = GetState(self, event)
-  for _, entries in ipairs({ state.entries, state.pending }) do
-    for _, existing in ipairs(entries) do
-      if existing.fn == fn and existing.owner == owner then return true end
-    end
+  if Contains(state.entries, fn, owner) or Contains(state.pending, fn, owner) then
+    return true
   end
+
   nextListenerID = nextListenerID + 1
-  local entry = { fn = fn, owner = owner, id = nextListenerID }
+  local entry = {
+    fn = fn,
+    owner = owner,
+    diagnosticLabel = "RothChat:Emit:" .. event .. "#" .. tostring(nextListenerID),
+  }
   if state.depth > 0 then
     state.pending[#state.pending + 1] = entry
   else
@@ -82,33 +117,27 @@ function RothChat:Off(event, fn)
   local state = self._listenerStates[event]
   if not state then return false end
 
-  for index = 1, #state.entries do
-    local entry = state.entries[index]
-    if entry and entry.fn == fn then entry.fn = nil; state.dirty = true end
-  end
-  for index = 1, #state.pending do
-    local entry = state.pending[index]
-    if entry and entry.fn == fn then entry.fn = nil; state.dirty = true end
-  end
+  local removed = RemoveFunction(state.entries, fn)
+  if RemoveFunction(state.pending, fn) then removed = true end
+  if removed then state.dirty = true end
   Flush(self, event, state)
-  return true
+  return removed
 end
 
 function RothChat:OffOwner(owner)
   if owner == nil or not NS.CanAccessValue(owner) then return false end
+  local removed = false
   -- Flush only removes the current key; it never adds keys during traversal.
   for event, state in pairs(self._listenerStates) do
-    for entryIndex = 1, #state.entries do
-      local entry = state.entries[entryIndex]
-      if entry and entry.fn and entry.owner == owner then entry.fn = nil; state.dirty = true end
-    end
-    for entryIndex = 1, #state.pending do
-      local entry = state.pending[entryIndex]
-      if entry and entry.fn and entry.owner == owner then entry.fn = nil; state.dirty = true end
+    local eventRemoved = RemoveOwnerFrom(state.entries, owner)
+    if RemoveOwnerFrom(state.pending, owner) then eventRemoved = true end
+    if eventRemoved then
+      state.dirty = true
+      removed = true
     end
     Flush(self, event, state)
   end
-  return true
+  return removed
 end
 
 function RothChat:Emit(event, ...)
@@ -121,13 +150,7 @@ function RothChat:Emit(event, ...)
   for index = 1, limit do
     local entry = state.entries[index]
     if entry and type(entry.fn) == "function" then
-      NS.SafeCall(
-        "RothChat:Emit:" .. event .. "#" .. tostring(entry.id),
-        entry.fn,
-        entry.owner,
-        self,
-        ...
-      )
+      NS.SafeCall(entry.diagnosticLabel, entry.fn, entry.owner, self, ...)
     end
   end
   state.depth = state.depth - 1
