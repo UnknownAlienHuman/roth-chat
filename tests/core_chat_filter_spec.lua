@@ -4,6 +4,10 @@ local env = Runtime.New()
 local registeredFilters, NS = env.filters, env.ns
 local pack = NS.Pack
 
+-- The dispatcher must preserve the received tuple directly on the Lua stack;
+-- allocating a Pack table per chat message is not part of the hot-path contract.
+NS.Pack = function() error("message filter dispatcher allocated a tuple table") end
+
 local core = assert(_G.RothChat)
 local event = "CHAT_MSG_SAY"
 local payload = {
