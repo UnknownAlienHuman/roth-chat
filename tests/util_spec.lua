@@ -31,8 +31,12 @@ env:Advance()
 assert(captured.n == 4 and captured[1] == 1 and captured[2] == nil and captured[3] == 3)
 assert(not NS.Schedule("opaque", 0, function() error("must not run") end, nil, env.inaccessible))
 assert(not NS.Schedule(env.inaccessible, 0, function() error("opaque key ran") end))
+assert(not NS.Schedule("opaque-delay", env.inaccessible, function() error("opaque delay ran") end))
 assert(not NS.Schedule("opaque-label", 0, function() error("opaque label ran") end, env.inaccessible))
-NS.CancelScheduled(env.inaccessible)
+assert(not NS.Schedule("invalid-label", 0, function() error("invalid label ran") end, 42))
+assert(not NS.CancelScheduled(env.inaccessible))
+assert(NS.Schedule("cancel", 1, function() error("cancelled job ran") end))
+assert(NS.CancelScheduled("cancel") and not NS.CancelScheduled("cancel"))
 
 -- Both jobs are already due. Whichever runs first cancels the other.
 local count = 0
@@ -40,6 +44,17 @@ NS.Schedule("a", 0, function() count = count + 1; NS.CancelScheduled("b") end)
 NS.Schedule("b", 0, function() count = count + 1; NS.CancelScheduled("a") end)
 env:Advance()
 assert(count == 1, "cancellation must invalidate an already captured due job")
+
+-- Different scheduled callbacks sharing one symbolic base label retain separate
+-- ordinary diagnostic identities and cannot suppress one another.
+local reportsBeforeScheduledFailures = #env.reports
+NS.Schedule("fail-a", 0, function() error("a") end, "RothChat:ScheduledFailure")
+NS.Schedule("fail-b", 0, function() error("b") end, "RothChat:ScheduledFailure")
+env:Advance()
+assert(#env.reports == reportsBeforeScheduledFailures + 2)
+assert(env.reports[#env.reports - 1] ~= env.reports[#env.reports])
+assert(env.reports[#env.reports - 1]:find("RothChat:ScheduledFailure#", 1, true))
+assert(env.reports[#env.reports]:find("RothChat:ScheduledFailure#", 1, true))
 
 -- Completing a near-target fade cancels the previous animation.
 env.frame.alpha = 0
@@ -109,6 +124,19 @@ NS.StopFading(env.inaccessible, 0)
 NS.StopFading(env.frame, env.inaccessible)
 assert(env.frame.alpha == 1, "denied alpha must not replace current presentation")
 
+-- Independent fade completion failures use independent labels even though all
+-- callbacks share the same fader and complete in one update.
+local fadeFailureA, fadeFailureB = CreateFrame("Frame"), CreateFrame("Frame")
+fadeFailureA.alpha, fadeFailureB.alpha = 0, 0
+local reportsBeforeFadeFailures = #env.reports
+NS.FadeTo(fadeFailureA, 1, 1, function() error("fade a") end)
+NS.FadeTo(fadeFailureB, 1, 1, function() error("fade b") end)
+env:Advance(1)
+assert(#env.reports == reportsBeforeFadeFailures + 2)
+assert(env.reports[#env.reports - 1] ~= env.reports[#env.reports])
+assert(env.reports[#env.reports - 1]:find("RothChat:FadeComplete#", 1, true))
+assert(env.reports[#env.reports]:find("RothChat:FadeComplete#", 1, true))
+
 -- SetAlpha post-hooks may synchronously replace the just-completed fade.
 local reverse = CreateFrame("Frame")
 reverse.alpha = 0
@@ -157,5 +185,16 @@ assert(core:CancelDeferred("cancelled"))
 assert(not core:CancelDeferred("cancelled"))
 core:RunDeferred()
 assert(core._deferredCount == 0 and #core._deferred == 0)
+
+-- Deferred failures are isolated by logical job identity rather than the one
+-- generic combat-deferred label.
+local reportsBeforeDeferredFailures = #env.reports
+assert(core:DeferKeyed("deferred-fail-a", function() error("deferred a") end))
+assert(core:DeferKeyed("deferred-fail-b", function() error("deferred b") end))
+core:RunDeferred()
+assert(#env.reports == reportsBeforeDeferredFailures + 2)
+assert(env.reports[#env.reports - 1] ~= env.reports[#env.reports])
+assert(env.reports[#env.reports - 1]:find("RothChat:Deferred#", 1, true))
+assert(env.reports[#env.reports]:find("RothChat:Deferred#", 1, true))
 
 print("util_spec: ok")
