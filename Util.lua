@@ -154,16 +154,21 @@ local MAX_SCHEDULED_JOBS = 128
 local schedulerFrame = CreateFrame("Frame", "RothChatScheduler")
 
 local function SchedulerOnUpdate(self)
-  local now, due = GetTime(), nil
+  local now = NS.SafeNumber(GetTime())
+  if not now then return end
+
+  local due
   for key, job in pairs(scheduledJobs) do
     if now >= job.at then
       due = due or {}
-      due[#due + 1] = { key, job }
+      due[#due + 1] = key
+      due[#due + 1] = job
     end
   end
   if not due then return end
-  for index = 1, #due do
-    local key, job = due[index][1], due[index][2]
+
+  for index = 1, #due, 2 do
+    local key, job = due[index], due[index + 1]
     if scheduledJobs[key] == job then
       scheduledJobs[key] = nil
       scheduledCount = scheduledCount - 1
@@ -174,12 +179,16 @@ local function SchedulerOnUpdate(self)
 end
 
 function NS.Schedule(key, delay, callback, label, ...)
-  if not NS.CanAccessAllValues(key, callback, label) or key == nil
+  if not NS.CanAccessAllValues(key, delay, callback, label) or key == nil
     or type(callback) ~= "function" or (label ~= nil and type(label) ~= "string")
     or not NS.CanAccessAllValues(...)
   then
     return false
   end
+
+  delay = NS.SafeNumber(delay)
+  local now = NS.SafeNumber(GetTime())
+  if delay == nil or now == nil then return false end
 
   local previous = scheduledJobs[key]
   local id = previous and previous.id
@@ -192,7 +201,7 @@ function NS.Schedule(key, delay, callback, label, ...)
 
   local baseLabel = label or "RothChat:Schedule"
   scheduledJobs[key] = {
-    at = GetTime() + math.max(0, NS.SafeNumber(delay, 0)),
+    at = now + math.max(0, delay),
     fn = callback,
     args = NS.Pack(...),
     id = id,
@@ -284,7 +293,8 @@ local function FadeOnUpdate(_, elapsed)
       elseif done then
         if data.callback then
           completed = completed or {}
-          completed[#completed + 1] = { frame, data }
+          completed[#completed + 1] = frame
+          completed[#completed + 1] = data
         elseif fadeObjects[frame] == data then
           fadeObjects[frame] = nil
         end
@@ -295,8 +305,8 @@ local function FadeOnUpdate(_, elapsed)
   -- Keep completion identity until dispatch so an earlier callback can cancel
   -- or replace a later completion from this same update.
   if completed then
-    for _, completion in ipairs(completed) do
-      local frame, data = completion[1], completion[2]
+    for index = 1, #completed, 2 do
+      local frame, data = completed[index], completed[index + 1]
       if fadeObjects[frame] == data then
         fadeObjects[frame] = nil
         if CanFade(frame) then NS.SafeCall(data.diagnosticLabel, data.callback, frame) end
